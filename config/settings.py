@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
 
 
@@ -11,6 +13,7 @@ class Settings(BaseSettings):
     # Claude Code CLI
     claude_cli_path: str = "claude"
     claude_default_model: str = "sonnet"
+    claude_data_dir: str = ""
 
     # Workspace
     default_workspace: str = "D:\\projects"
@@ -40,6 +43,12 @@ class Settings(BaseSettings):
 
     def get_allowed_users(self) -> list[str]:
         return [u.strip() for u in self.allowed_users.split(",") if u.strip()]
+
+    def get_default_workspace(self) -> str:
+        """Return the configured workspace, or the process cwd when unset."""
+        configured = self.default_workspace.strip()
+        path = Path(configured).expanduser() if configured else Path.cwd()
+        return str(path.resolve())
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

@@ -164,12 +164,12 @@ class Session(BaseModel):
     user_open_id: str
     chat_id: str
     workspace: str
+    workspace_selected: bool = False
     status: TaskStatus = TaskStatus.QUEUED
     current_task_id: str | None = None
     result: ExecutionResult | None = None
     agent_messages: list[dict] = Field(default_factory=list)
-    claude_session_id: str = ""  # Claude Code CLI session_id for --resume
-    approval_mode: str = "m"     # h=高容忍(全允许) m=中(高风险审批) l=低(全审批)
-    last_model: str = ""         # last used claude model
+    claude_session_id: str = ""  # 当前动态运行活动句柄 (支持 --resume <id> 或 __continue__ 自动恢复项目最新历史)
     context_tokens: int = 0      # last input_tokens (context usage proxy)
     context_limit: int = 200000  # context window limit
+    pending_prompt: str = ""     # Prompt pending auto-retry after initial setup

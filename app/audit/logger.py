@@ -7,7 +7,7 @@ from pathlib import Path
 
 from config.settings import settings
 
-logger = logging.getLogger("openclaw.audit")
+logger = logging.getLogger("myclaw.audit")
 
 
 class AuditLogger:
@@ -16,8 +16,14 @@ class AuditLogger:
         self._setup()
 
     def _setup(self) -> None:
+        from logging.handlers import RotatingFileHandler
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
-        handler = logging.FileHandler(self._log_path, encoding="utf-8")
+        handler = RotatingFileHandler(
+            self._log_path,
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
         handler.setFormatter(logging.Formatter("%(message)s"))
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)

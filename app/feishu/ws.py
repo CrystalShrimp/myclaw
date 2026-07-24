@@ -10,6 +10,7 @@ import asyncio
 import base64
 import http
 import logging
+import time
 from urllib.parse import urlparse, parse_qs
 
 import websockets
@@ -33,7 +34,7 @@ from lark_oapi.ws.enum import MessageType, FrameType
 from lark_oapi.ws.model import Response
 from lark_oapi.ws.pb.pbbp2_pb2 import Frame
 
-logger = logging.getLogger("openclaw.ws")
+logger = logging.getLogger("myclaw.ws")
 
 
 def _running_loop() -> asyncio.AbstractEventLoop:
@@ -128,12 +129,17 @@ class FeishuWsClient(_BaseClient):
 
         resp = Response(code=http.HTTPStatus.OK)
         try:
+            started_at = int(round(time.time() * 1000))
             if message_type in (MessageType.EVENT, MessageType.CARD):
                 result = self._event_handler.do_without_validation(pl)
             else:
                 logger.warning("Unknown frame type: %s", message_type.value)
                 return
 
+            finished_at = int(round(time.time() * 1000))
+            header = hs.add()
+            header.key = HEADER_BIZ_RT
+            header.value = str(finished_at - started_at)
             if result is not None:
                 resp.data = base64.b64encode(JSON.marshal(result).encode(UTF_8))
         except Exception as e:

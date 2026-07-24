@@ -13,6 +13,7 @@ import os
 import shutil
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 from config.settings import settings
 from app.feishu.cards import (
@@ -23,9 +24,9 @@ from app.feishu.cards import (
 from app.feishu.client import feishu_client
 from app.models.schemas import AgentResult, ToolCallRecord
 from app.audit.logger import audit_logger
-from app.profiles import load_active_profile_env, OPENCLAW_ROOT, CONFIG_DIR
+from app.profiles import load_profile_env, MYCLAW_ROOT, CONFIG_DIR
 
-logger = logging.getLogger("openclaw.cli_loop")
+logger = logging.getLogger("myclaw.cli_loop")
 
 # Map claude_session_id -> {open_id, approval_mode}
 # Used by hooks router to look up user + approval mode for tool cards.
@@ -35,7 +36,7 @@ session_registry: dict[str, dict] = {}
 # ---- helpers ----
 
 
-def _build_env(workspace: str) -> dict:
+def _build_env(workspace: str, profile_name: str = "") -> dict:
     env = os.environ.copy()
     for key in ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT",
                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"]:
@@ -43,7 +44,8 @@ def _build_env(workspace: str) -> dict:
     # Inject active profile env vars (ANTHROPIC_BASE_URL, AUTH_TOKEN,
     # model names) per-process so concurrent claude invocations under
     # different profiles don't fight over ~/.claude/settings.json.
-    env.update(load_active_profile_env())
+    env.update(load_profile_env(profile_name))
+
     if os.name == "nt" and "CLAUDE_CODE_GIT_BASH_PATH" not in env:
         for candidate in [
             r"D:\Git\bin\bash.exe",
@@ -56,15 +58,15 @@ def _build_env(workspace: str) -> dict:
     return env
 
 
-def _write_openclaw_settings() -> None:
-    """幂等覆写 config/claude_settings.json — openclaw 拥有这个文件，不合并。
+def _write_myclaw_settings() -> None:
+    """幂等覆写 config/claude_settings.json — myclaw 拥有这个文件，不合并。
 
     子进程通过 --settings 加载它，优先级高于所有 settings.json 层级。
     每次 spawn 前覆写，自愈：即使用户手改过，下次 spawn 恢复预期配置。
     """
     settings_file = CONFIG_DIR / "claude_settings.json"
     settings_file.parent.mkdir(parents=True, exist_ok=True)
-    hook_script = OPENCLAW_ROOT / "scripts" / "hooks" / "pre_tool_use.py"
+    hook_script = MYCLAW_ROOT / "scripts" / "hooks" / "pre_tool_use.py"
     payload = {
         "permissions": {
             "allow": [
@@ -90,8 +92,8 @@ def _write_openclaw_settings() -> None:
     )
 
 
-def _strip_openclaw_hooks(workspace: str) -> None:
-    """移除 workspace/.claude/settings.local.json 里 openclaw 注入过的 hook 条目。
+def _strip_myclaw_hooks(workspace: str) -> None:
+    """移除 workspace/.claude/settings.local.json 里 myclaw 注入过的 hook 条目。
 
     按 hook script 路径子串匹配；只清自己注入的，不动用户其他配置。
     文件清空到 {} 才删，否则保留（用户可能还有 permissions 等 key）。
@@ -108,7 +110,7 @@ def _strip_openclaw_hooks(workspace: str) -> None:
     pre = data.get("hooks", {}).get("PreToolUse")
     if not pre:
         return
-    needle = str(OPENCLAW_ROOT / "scripts" / "hooks" / "pre_tool_use.py")
+    needle = str(MYCLAW_ROOT / "scripts" / "hooks" / "pre_tool_use.py")
     kept = [
         e for e in pre
         if not any(needle in h.get("command", "") for h in e.get("hooks", []))
@@ -125,19 +127,41 @@ def _strip_openclaw_hooks(workspace: str) -> None:
         f.unlink()
     else:
         f.write_text(json.dumps(data, indent=2, ensure_ascii=False), "utf-8")
-    logger.info("Stripped openclaw hooks from %s", f)
+    logger.info("Stripped myclaw hooks from %s", f)
 
 
 async def _ensure_hook_config(workspace: str) -> None:
-    """每次 spawn 前调用：写 openclaw 自有 settings + 清 workspace 旧注入。
+    """每次 spawn 前调用：写 myclaw 自有 settings + 清 workspace 旧注入。
 
-    第三步清理 openclaw 项目自己的 .claude/settings.local.json（旧版本代码
+    第三步清理 myclaw 项目自己的 .claude/settings.local.json（旧版本代码
     注入 hook 的地方）。当前该文件只有 permissions 没 hook，是 no-op；保留
     这步以应对历史残留。按脚本路径匹配，不会误删开发者自配的 hook。
     """
-    _write_openclaw_settings()
-    _strip_openclaw_hooks(workspace)
-    _strip_openclaw_hooks(str(OPENCLAW_ROOT))
+    _write_myclaw_settings()
+    _strip_myclaw_hooks(workspace)
+    _strip_myclaw_hooks(str(MYCLAW_ROOT))
+
+
+def _has_native_session_history(workspace: str) -> bool:
+    """检查指定工作区目录在 Claude Code 中是否有已存在的物理历史 Session 文件。"""
+    try:
+        ws_path = Path(workspace).resolve()
+        # 1. 检查工作区本地是否有 .claude/ 目录且非空
+        local_claude = ws_path / ".claude"
+        if local_claude.is_dir() and any(local_claude.iterdir()):
+            return True
+
+        # 2. 检查全局 ~/.claude/projects/ 下是否有该工作区的历史记录
+        home_claude = Path.home() / ".claude" / "projects"
+        if home_claude.is_dir():
+            sanitized = str(ws_path).replace(":", "").replace("\\", "_").replace("/", "_")
+            for proj_dir in home_claude.iterdir():
+                if proj_dir.is_dir() and sanitized.lower() in proj_dir.name.lower():
+                    if any(proj_dir.glob("*.jsonl")):
+                        return True
+    except Exception as e:
+        logger.debug("Error checking workspace history for %s: %s", workspace, e)
+    return False
 
 
 # ---- main class ----
@@ -164,19 +188,19 @@ class ClaudeCLILoop:
         self._reader_tasks: dict[str, asyncio.Task] = {}
         self._start_locks: dict[str, asyncio.Lock] = {}
         self._last_error: str = ""
-        # Users whose process has had its stdin closed (--print mode is
-        # one-shot: once stdin is closed the process can no longer accept
-        # input, even though returncode may still be None while it drains).
-        self._consumed: set[str] = set()
 
     # ---- public API ----
 
     def is_running(self, open_id: str) -> bool:
         """Check if there's a running CLI process that can still accept messages."""
-        if open_id in self._consumed:
-            return False
         proc = self._processes.get(open_id)
-        return proc is not None and proc.returncode is None
+        writer = self._stdin_writers.get(open_id)
+        return (
+            proc is not None
+            and proc.returncode is None
+            and writer is not None
+            and not writer.is_closing()
+        )
 
     def get_session_id_for_user(self, open_id: str) -> str | None:
         """Get the Claude session_id for a currently running user process."""
@@ -192,6 +216,7 @@ class ClaudeCLILoop:
         workspace: str,
         model: str | None = None,
         approval_mode: str = "m",
+        profile_name: str = "",
         claude_session_id: str | None = None,
         resume_session_id: str | None = None,
     ) -> AgentResult:
@@ -201,22 +226,21 @@ class ClaudeCLILoop:
         handling uses claude's native flags:
 
         - *resume_session_id*  → ``claude --resume <id>`` (specific session)
-        - *claude_session_id*  → ``claude --continue``       (most recent in workspace)
+        - *claude_session_id*  → ``claude --resume <id>``    (persisted session)
         - neither              → fresh session
         """
         lock = self._start_locks.setdefault(open_id, asyncio.Lock())
         chosen = model or settings.claude_default_model
 
         async with lock:
-            # Start process if needed. A previous process whose stdin was
-            # closed (--print one-shot) must be torn down first, otherwise
-            # the old reader task's _cleanup would race with the new
-            # process's state.
+            # Start on first use or after an actual process failure. A healthy
+            # stream-json process remains attached to the Feishu user so
+            # subsequent messages stay in the same native Claude session.
             if not self.is_running(open_id):
                 await self._teardown_previous(open_id)
                 await self._start_process(
-                    open_id, workspace, model, approval_mode, claude_session_id,
-                    resume_session_id,
+                    open_id, workspace, model, approval_mode, profile_name,
+                    claude_session_id, resume_session_id,
                 )
 
             writer = self._stdin_writers.get(open_id)
@@ -254,10 +278,6 @@ class ClaudeCLILoop:
             }) + "\n"
             writer.write(payload.encode())
             await writer.drain()
-            writer.close()  # 关闭 stdin 让 CLI 2.1.71 开始处理消息
-            # stdin 已关闭，进程进入"已消费"状态：不能再接受新输入。
-            # 下一条消息必须启动新进程（见 _teardown_previous）。
-            self._consumed.add(open_id)
 
         return await future
 
@@ -273,7 +293,6 @@ class ClaudeCLILoop:
         old_task = self._reader_tasks.pop(open_id, None)
         old_proc = self._processes.pop(open_id, None)
         self._stdin_writers.pop(open_id, None)
-        self._consumed.discard(open_id)
 
         if old_proc is not None and old_proc.returncode is None:
             try:
@@ -309,7 +328,6 @@ class ClaudeCLILoop:
             task.cancel()
 
         self._stdin_writers.pop(open_id, None)
-        self._consumed.discard(open_id)
 
         if proc and proc.returncode is None:
             proc.terminate()
@@ -336,11 +354,17 @@ class ClaudeCLILoop:
 
     async def _start_process(
         self, open_id: str, workspace: str, model: str | None,
-        approval_mode: str, claude_session_id: str | None = None,
+        approval_mode: str, profile_name: str = "",
+        claude_session_id: str | None = None,
         resume_session_id: str | None = None,
     ) -> None:
         chosen = model or settings.claude_default_model
         cli_path = settings.claude_cli_path
+
+        workspace_path = Path(workspace)
+        if not workspace_path.is_dir():
+            raise NotADirectoryError(f"Workspace is not a directory: {workspace}")
+        workspace = str(workspace_path.resolve())
 
         # shutil.which resolves bare names ("claude") to a real path,
         # picking up .cmd/.bat/.exe on Windows that CreateProcess alone
@@ -362,25 +386,30 @@ class ClaudeCLILoop:
             "--verbose",
             "--include-partial-messages",
             # 隔离 desktop 端 ~/.claude/settings.json：只加载 project+local 级，
-            # 再用 --settings 显式叠加 openclaw 自有配置（hook + permissions），
+            # 再用 --settings 显式叠加 myclaw 自有配置（hook + permissions），
             # --settings 优先级最高，覆盖一切重叠 key。
             "--setting-sources", "project,local",
             "--settings", str(CONFIG_DIR / "claude_settings.json"),
         ]
-        # Use claude's native session flags. Explicit --resume <id> wins
-        # over --continue; if neither applies, start a fresh session.
+        # Resume the exact persisted session after a real process restart.
+        # The sentinel is reserved for the explicit /continue command.
         if resume_session_id:
             args.extend(["--resume", resume_session_id])
+        elif claude_session_id == "__continue__":
+            if _has_native_session_history(workspace):
+                args.append("--continue")
+            else:
+                logger.info("Workspace %s has no native session history, starting fresh clean session.", workspace)
         elif claude_session_id:
-            args.append("--continue")
-        # High-tolerance approval mode: skip openclaw's hook entirely
+            args.extend(["--resume", claude_session_id])
+        # High-tolerance approval mode: skip myclaw's hook entirely
         # and let claude's native bypassPermissions handle everything.
         if approval_mode == "h":
             args.extend(["--permission-mode", "bypassPermissions"])
         if chosen:
             args.extend(["--model", chosen])
 
-        env = _build_env(workspace)
+        env = _build_env(workspace, profile_name)
         await _ensure_hook_config(workspace)
 
         proc = await asyncio.create_subprocess_exec(
@@ -561,6 +590,20 @@ class ClaudeCLILoop:
                         except Exception:
                             pass
 
+            # 如果当前进程依然是注册进程，说明是发生了非预期的意外崩溃
+            is_unexpected = (self._processes.get(open_id) == proc)
+            if is_unexpected and (exit_code != 0 or self._last_error):
+                reason = self._last_error or f"进程异常退出 (退出码={exit_code})"
+                asyncio.create_task(
+                    feishu_client.send_text(
+                        open_id,
+                        f"🚨 **Claude 运行进程异常退出** 🚨\n"
+                        f"退出状态码: `{exit_code}`\n"
+                        f"错误详情:\n```\n{reason[:1000]}\n```\n"
+                        f"💡 自愈提示：您可以尝试发送 `/new` 重置会话，或发送 `/cd` 切换到其他可用工作区。"
+                    )
+                )
+
             logger.info(
                 "Claude interactive process exited: open_id=%s code=%s",
                 open_id, exit_code,
@@ -666,7 +709,6 @@ class ClaudeCLILoop:
         self._processes.pop(open_id, None)
         self._stdin_writers.pop(open_id, None)
         self._reader_tasks.pop(open_id, None)
-        self._consumed.discard(open_id)
         # Clean up session_registry entries for this user
         stale_sids = [
             sid for sid, info in session_registry.items()

@@ -1,12 +1,12 @@
 """Model profile management — provider switch via per-process env vars.
 
-Profiles are stored as settings_<name>.json in the openclaw application
-config directory (<openclaw_root>/config/). The "active" profile is
-recorded in <openclaw_root>/config/active_profile (a single line
+Profiles are stored as settings_<name>.json in the myclaw application
+config directory (<myclaw_root>/config/). The "active" profile is
+recorded in <myclaw_root>/config/active_profile (a single line
 containing the profile name) and its env vars (ANTHROPIC_BASE_URL,
-ANTHROPIC_AUTH_TOKEN, model vars) are injected into each openclaw-spawned
+ANTHROPIC_AUTH_TOKEN, model vars) are injected into each myclaw-spawned
 claude subprocess via _build_env. We never mutate ~/.claude/settings.json
-or any workspace's .claude/, so concurrent claude processes (other openclaw
+or any workspace's .claude/, so concurrent claude processes (other myclaw
 users, IDE plugins, manual ``claude`` runs) are not affected by a profile
 switch.
 """
@@ -18,10 +18,10 @@ from pathlib import Path
 
 import httpx
 
-logger = logging.getLogger("openclaw.profiles")
+logger = logging.getLogger("myclaw.profiles")
 
-OPENCLAW_ROOT = Path(__file__).resolve().parent.parent  # app/profiles.py → app/ → root
-CONFIG_DIR = OPENCLAW_ROOT / "config"
+MYCLAW_ROOT = Path(__file__).resolve().parent.parent  # app/profiles.py → app/ → root
+CONFIG_DIR = MYCLAW_ROOT / "config"
 ACTIVE_PROFILE_FILE = CONFIG_DIR / "active_profile"
 
 # Profile display labels for card UI
@@ -42,6 +42,8 @@ def discover_profiles() -> dict[str, dict]:
     for f in sorted(CONFIG_DIR.glob("settings_*.json")):
         try:
             name = f.stem.replace("settings_", "")
+            if name.endswith(".example"):
+                continue
             data = json.loads(f.read_text("utf-8"))
             base_url = data.get("env", {}).get("ANTHROPIC_BASE_URL", "")
             model = data.get("model", "")
@@ -60,7 +62,7 @@ def discover_profiles() -> dict[str, dict]:
 def get_active_profile() -> str:
     """Return the currently active profile name.
 
-    Reads ~/.openclaw_active_profile. Falls back to "unknown" if missing
+    Reads ~/.myclaw_active_profile. Falls back to "unknown" if missing
     or stale. This used to compare ANTHROPIC_AUTH_TOKEN against every
     profile; that broke under concurrent users, so we now track the
     active name explicitly.
@@ -81,7 +83,7 @@ def switch_profile(name: str) -> bool:
 
     No file copying — the actual env injection happens in
     load_active_profile_env() when claude is spawned. This keeps the
-    switch side-effect-free for everything outside openclaw.
+    switch side-effect-free for everything outside myclaw.
 
     Args:
         name: Profile name (e.g. "glm", "kimi"). Must match a
@@ -103,6 +105,22 @@ def switch_profile(name: str) -> bool:
         return False
 
 
+def load_profile_env(name: str) -> dict[str, str]:
+    """Return process environment values for one explicit profile."""
+    if not name or name == "unknown":
+        return {}
+    source = CONFIG_DIR / f"settings_{name}.json"
+    if not source.exists():
+        return {}
+    try:
+        data = json.loads(source.read_text("utf-8"))
+        env = data.get("env", {})
+        return {k: str(v) for k, v in env.items() if isinstance(v, (str, int))}
+    except Exception as e:
+        logger.warning("Failed to load profile env %s: %s", name, e)
+        return {}
+
+
 def load_active_profile_env() -> dict[str, str]:
     """Return env vars for the active profile, for claude subprocess injection.
 
@@ -113,32 +131,20 @@ def load_active_profile_env() -> dict[str, str]:
     name = get_active_profile()
     if name == "unknown":
         return {}
-    source = CONFIG_DIR / f"settings_{name}.json"
-    if not source.exists():
-        return {}
-    try:
-        data = json.loads(source.read_text("utf-8"))
-        env = data.get("env", {})
-        # Only forward string-typed env entries; anything else would
-        # break subprocess env construction.
-        return {k: str(v) for k, v in env.items() if isinstance(v, (str, int))}
-    except Exception as e:
-        logger.warning("Failed to load profile env %s: %s", name, e)
-        return {}
+    return load_profile_env(name)
 
-
-def test_profile() -> tuple[bool, str]:
+def test_profile(name: str | None = None) -> tuple[bool, str]:
     """Test the active profile by sending a minimal API request.
 
     Uses the env vars that would actually be injected at spawn time,
     so this validates exactly what claude will see — not whatever happens
     to be in ~/.claude/settings.json right now.
     """
-    name = get_active_profile()
+    name = name or get_active_profile()
     if name == "unknown":
-        return False, "未设置 active profile（用 /switch 选择一个）"
+        return False, "未选择模型（用 /model 选择一个）"
 
-    env = load_active_profile_env()
+    env = load_profile_env(name)
     base_url = env.get("ANTHROPIC_BASE_URL", "")
     api_key = env.get("ANTHROPIC_AUTH_TOKEN", "")
     model = env.get("ANTHROPIC_DEFAULT_OPUS_MODEL", "")

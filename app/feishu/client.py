@@ -2,19 +2,20 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 import httpx
 
 from config.settings import settings
 
-logger = logging.getLogger("openclaw.feishu")
+logger = logging.getLogger("myclaw.feishu")
 
 # Feishu API base
 API_BASE = "https://open.feishu.cn/open-apis"
 
 
 class FeishuClient:
-    """Feishu API client for sending messages and interactive cards."""
+    """Feishu API client for sending messages, files and interactive cards."""
 
     def __init__(self) -> None:
         self._app_id = settings.feishu_app_id
@@ -97,6 +98,69 @@ class FeishuClient:
                 return await self.send_card(receive_id, card, is_chat=is_chat)
             # Raise on other errors so callers know the card wasn't delivered
             raise RuntimeError(f"send_card failed: code={data.get('code')} msg={data.get('msg')}")
+        return data
+
+    async def upload_file(self, file_path: str | Path, file_type: str = "stream") -> str:
+        """Upload a file to Feishu and return file_key.
+
+        API: POST /im/v1/files
+        """
+        path = Path(file_path)
+        if not path.is_file():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        token = await self._ensure_token()
+        headers = {"Authorization": f"Bearer {token}"}
+
+        with open(path, "rb") as f:
+            files = {
+                "file": (path.name, f),
+            }
+            data = {
+                "file_type": file_type,
+                "file_name": path.name,
+            }
+            resp = await self._http.post(
+                f"{API_BASE}/im/v1/files",
+                headers=headers,
+                data=data,
+                files=files,
+            )
+
+        res_data = resp.json()
+        if res_data.get("code") != 0:
+            logger.error("upload_file failed: %s", res_data)
+            if res_data.get("code") == 99991663:
+                await self._refresh_token()
+                return await self.upload_file(file_path, file_type=file_type)
+            raise RuntimeError(f"Upload file failed: code={res_data.get('code')} msg={res_data.get('msg')}")
+
+        return res_data.get("data", {}).get("file_key", "")
+
+    async def send_file(self, receive_id: str, file_key: str, *, is_chat: bool = False) -> dict:
+        """Send a file message to a user or chat.
+
+        API: POST /im/v1/messages
+        """
+        receive_id_type = "chat_id" if is_chat else "open_id"
+        headers = await self._api_headers()
+        resp = await self._http.post(
+            f"{API_BASE}/im/v1/messages",
+            params={"receive_id_type": receive_id_type},
+            headers=headers,
+            json={
+                "receive_id": receive_id,
+                "msg_type": "file",
+                "content": json.dumps({"file_key": file_key}),
+            },
+        )
+        data = resp.json()
+        if data.get("code") != 0:
+            logger.error("send_file failed: %s", data)
+            if data.get("code") == 99991663:
+                await self._refresh_token()
+                return await self.send_file(receive_id, file_key, is_chat=is_chat)
+            raise RuntimeError(f"send_file failed: code={data.get('code')} msg={data.get('msg')}")
         return data
 
     async def reply_text(self, message_id: str, text: str) -> dict:

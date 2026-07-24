@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
@@ -13,16 +14,22 @@ from app.feishu.client import feishu_client
 from app.feishu.ws import FeishuWsClient, create_ws_client
 from app.feishu import events
 from app.hooks.router import router as hooks_router
+from logging.handlers import RotatingFileHandler
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("openclaw.log", encoding="utf-8"),
+        RotatingFileHandler(
+            "myclaw.log",
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        ),
     ],
 )
-logger = logging.getLogger("openclaw")
+logger = logging.getLogger("myclaw")
 
 # Build event dispatcher
 event_handler = (
@@ -41,8 +48,15 @@ ws_client: FeishuWsClient | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global ws_client
-    logger.info("OpenClaw starting...")
-    logger.info("Default workspace: %s", settings.default_workspace)
+    workspace = Path(settings.get_default_workspace())
+    if workspace.exists() and not workspace.is_dir():
+        raise NotADirectoryError(
+            f"DEFAULT_WORKSPACE exists but is not a directory: {workspace}"
+        )
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    logger.info("myclaw starting...")
+    logger.info("Default workspace: %s", workspace)
     logger.info("Allowed users: %s", settings.get_allowed_users() or "(all)")
     logger.info("Claude CLI: %s", settings.claude_cli_path)
 
@@ -55,49 +69,21 @@ async def lifespan(app: FastAPI):
     ws_task = ws_client.start_async()
     logger.info("Feishu WS client connecting...")
 
-    # Profile sanity check: credentials now come only from the active profile
-    # (user-level ~/.claude/settings.json is isolated via --setting-sources).
-    # If no profile is selected, Claude subprocesses fail with "not logged in".
-    from app.profiles import get_active_profile, discover_profiles
-    active = get_active_profile()
+    # Profiles are selected per Feishu user and persisted outside Claude sessions.
+    from app.profiles import discover_profiles
     profiles = discover_profiles()
     if not profiles:
-        logger.error(
-            "No profiles found in config/ (settings_*.json). Claude "
-            "subprocesses cannot authenticate — copy profile files in first."
-        )
-    elif active == "unknown" or active not in profiles:
-        logger.warning(
-            "No active profile selected (active=%r, available=%s). Claude "
-            "subprocesses will fail with 'not logged in'.",
-            active, list(profiles.keys()),
-        )
-        tip = (
-            "⚠️ openclaw 未选定 API profile，发消息会让 Claude 报 "
-            "'not logged in'。\n请在飞书发 /switch 选一个 profile（可用："
-            + "、".join(profiles.keys()) + "）。"
-        )
-        for uid in settings.get_allowed_users():
-            try:
-                await feishu_client.send_text(uid, tip)
-            except Exception as e:
-                logger.warning(
-                    "Failed to notify %s about missing profile: %s", uid, e,
-                )
+        logger.error("No model profiles found in config/settings_*.json")
     else:
-        logger.info(
-            "Active profile: %s (%s)",
-            active, profiles[active].get("label", active),
-        )
-
+        logger.info("Available model profiles: %s", list(profiles.keys()))
     yield
 
     await feishu_client.close()
-    logger.info("OpenClaw stopped.")
+    logger.info("myclaw stopped.")
 
 
 app = FastAPI(
-    title="OpenClaw",
+    title="myclaw",
     description="Feishu Bot backed by Claude Code CLI",
     version="0.2.0",
     lifespan=lifespan,

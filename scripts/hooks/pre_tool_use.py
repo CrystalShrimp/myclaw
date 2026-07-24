@@ -17,23 +17,29 @@ import urllib.request
 import urllib.error
 
 # Server URL — same host/port as the main FastAPI app
-HOST = os.environ.get("OPENCLAW_HOST", "localhost")
-PORT = os.environ.get("OPENCLAW_PORT", "8080")
+HOST = os.environ.get("MYCLAW_HOST", "localhost")
+PORT = os.environ.get("MYCLAW_PORT", "8080")
 HOOK_URL = f"http://{HOST}:{PORT}/hooks/pre_tool_use"
-TIMEOUT = int(os.environ.get("OPENCLAW_HOOK_TIMEOUT", "1800"))
+TIMEOUT = int(os.environ.get("MYCLAW_HOOK_TIMEOUT", "1800"))
 
 
 def main():
+    # Claude writes hook JSON as UTF-8; Windows otherwise decodes stdin as GBK.
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8", errors="strict")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="strict")
+
     # Read hook input from stdin
     try:
         data = json.load(sys.stdin)
     except Exception:
-        # Can't parse — allow by default
-        print(json.dumps({"decision": "allow", "reason": "invalid input"}))
+        # Can't parse — deny for security (fail-close)
+        print(json.dumps({"decision": "deny", "reason": "MyClaw 审批 Hook 解析输入失败"}))
         return
 
     # Forward to Python server
-    payload = json.dumps(data).encode("utf-8")
+    payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         HOOK_URL,
         data=payload,
@@ -44,19 +50,18 @@ def main():
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             result = json.loads(resp.read().decode("utf-8"))
-            print(json.dumps(result))
+            print(json.dumps(result, ensure_ascii=False))
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         print(json.dumps({
-            "decision": "allow",
-            "reason": f"hook server error {e.code}: {body[:200]}",
+            "decision": "deny",
+            "reason": f"MyClaw 审批服务异常 (HTTP {e.code})，出于安全保护已拒绝工具执行: {body[:150]}",
         }))
     except Exception as e:
-        # On any error (connection, timeout), allow the tool
-        # to avoid blocking Claude Code entirely
+        # Fail-close: deny on connection error or timeout for security
         print(json.dumps({
-            "decision": "allow",
-            "reason": f"hook error: {type(e).__name__}: {e}",
+            "decision": "deny",
+            "reason": f"MyClaw 审批服务断连 ({type(e).__name__})，出于安全保护已拒绝工具执行",
         }))
 
 

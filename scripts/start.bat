@@ -1,23 +1,5 @@
 @echo off
-chcp 65001 >nul 2>&1
-title OpenClaw
-
-cd /d D:\ForRunning\ForDev\openclaw
-
-if not exist .env (
-    echo [ERROR] .env file not found. Copy .env.example to .env and fill in your config.
-    echo   copy .env.example .env
-    pause
-    exit /b 1
-)
-
-if not exist .venv\Scripts\python.exe (
-    echo [ERROR] .venv not found. Run: uv sync
-    pause
-    exit /b 1
-)
-
-echo Starting OpenClaw...
-.venv\Scripts\python.exe -m app.main
-
-pause
+cd /d "%~dp0.."
+if not exist .env exit /b 2
+if not exist .venv\Scripts\pythonw.exe exit /b 3
+start "" ".venv\Scripts\pythonw.exe" "scripts\tray.pyw"

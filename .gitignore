@@ -42,5 +42,32 @@ config/active_profile
 .DS_Store
 Thumbs.db
 
+# User personal notes
+doc/
+
 # Debug
 openclaw_debug/
+# Feishu setup runtime artifacts and credentials
+auto_feishu/feishu-app-result.json
+auto_feishu/artifacts/
+auto_feishu/.env
+auto_feishu/node_modules/
+auto_feishu/dist/
+auto_feishu/*.log
+prev_work/feishu-app-result.json
+prev_work/artifacts/
+prev_work/.env
+
+# Runtime preferences & test cache
+.preferences/
+.pytest_cache/
+
+# Local runtime workspace config & logs
+.claude/
+.agents/
+audit.log
+
+# Subproject secrets & txt files
+auto_feishu/*.txt
+auto_feishu/key.txt
+

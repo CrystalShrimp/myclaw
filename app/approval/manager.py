@@ -9,7 +9,7 @@ from config.settings import settings
 from app.models.schemas import ApprovalRequest, ApprovalStatus, ParsedCommand, RiskLevel
 from app.audit.logger import audit_logger
 
-logger = logging.getLogger("openclaw.approval")
+logger = logging.getLogger("myclaw.approval")
 
 
 class ApprovalManager:
@@ -142,27 +142,13 @@ class ApprovalManager:
         if not request:
             return
 
-        # Send warning before expiry (5 min before, but only if timeout > 5 min)
+        # Wait for timeout (or warn_seconds if enabled)
         warn_seconds = settings.tool_approval_warn_seconds
         if timeout > warn_seconds:
             await asyncio.sleep(timeout - warn_seconds)
             request = self._pending.get(approval_id)
-            if request and request.status == ApprovalStatus.PENDING:
-                logger.warning("Approval %s expiring in %ds", approval_id, warn_seconds)
-                # Notify user via Feishu
-                try:
-                    from app.feishu.client import feishu_client
-                    # Find the user from the registry — look up by approval_id
-                    open_id = self._approval_users.get(approval_id, "")
-                    if open_id:
-                        await feishu_client.send_text(
-                            open_id,
-                            f"⚠️ 审批即将过期！\n"
-                            f"任务: {request.command.command[:100]}\n"
-                            f"还有 {warn_seconds // 60} 分钟自动拒绝，请尽快处理。",
-                        )
-                except Exception:
-                    pass
+            if not request or request.status != ApprovalStatus.PENDING:
+                return
             await asyncio.sleep(warn_seconds)
         else:
             await asyncio.sleep(timeout)
@@ -184,14 +170,15 @@ class ApprovalManager:
                 from app.feishu.client import feishu_client
                 open_id = self._approval_users.get(approval_id, "")
                 if open_id:
+                    cmd_summary = request.command.command[:80]
                     await feishu_client.send_text(
                         open_id,
-                        f"❌ 审批已过期，任务已被拒绝。\n"
-                        f"任务: {request.command.command[:100]}\n"
-                        f"你可以用 /continue 恢复会话继续。",
+                        f"⏱️ 审批超时未处理，任务已自动拒绝并停止。\n"
+                        f"指令：`{cmd_summary}`",
                     )
             except Exception:
                 pass
+        self.cleanup(approval_id)
 
     def cleanup(self, approval_id: str) -> None:
         self._pending.pop(approval_id, None)

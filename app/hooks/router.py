@@ -22,7 +22,7 @@ from app.approval.manager import approval_manager
 from app.feishu.client import feishu_client
 from app.feishu.cards import build_tool_approval_card
 
-logger = logging.getLogger("openclaw.hooks")
+logger = logging.getLogger("myclaw.hooks")
 
 router = APIRouter(prefix="/hooks", tags=["hooks"])
 
@@ -86,21 +86,23 @@ async def pre_tool_use(request: Request) -> dict:
         return {"decision": "allow", "reason": "session not tracked"}
 
     open_id = reg["open_id"]
-    mode = reg.get("approval_mode", "m")
+    mode = reg.get("approval_mode", "m")  # 'h' = high tolerance (auto), 'm' = medium (balanced), 'l' = low tolerance (strict)
 
-    # --- Mode h: allow everything ---
+    # --- Mode h (⚡ 全自动模式 / Full Auto): 100% 自动放行一切工具（包含 Edit, Write, Bash） ---
     if mode == "h":
-        logger.info("Mode h: auto-allowing %s", tool_name)
-        return {"decision": "allow", "reason": "high tolerance mode"}
+        logger.info("Mode h (Full Auto): auto-allowing tool %s", tool_name)
+        _hook_log.append(f"→ ALLOW ({tool_name} auto-allowed in full auto mode h)")
+        return {"decision": "allow", "reason": "full auto mode h"}
 
-    # --- Mode m: analyze risk ---
+    # --- Mode m (⚖️ 平衡模式 / Medium): 自动放行只读/安全工具，仅拦截高风险写操作 ---
     if mode == "m":
         needs_approval = _is_high_risk(tool_name, tool_input)
         if not needs_approval:
-            _hook_log.append(f"→ ALLOW (low risk in mode m)")
-            return {"decision": "allow", "reason": "low risk, medium mode"}
+            logger.info("Mode m (Balanced): auto-allowing tool %s", tool_name)
+            _hook_log.append(f"→ ALLOW ({tool_name} low risk in mode m)")
+            return {"decision": "allow", "reason": "balanced mode m"}
 
-    # --- Mode l or mode m + high-risk: send approval card ---
+    # --- Mode l (🛡️ 严格模式 / Low Tolerance) 或 高风险写操作: 发送确认卡片 ---
     approval_id = uuid.uuid4().hex[:12]
     _hook_log.append(f"→ SENDING CARD approval_id={approval_id} to open_id={open_id}")
 
@@ -128,6 +130,11 @@ async def pre_tool_use(request: Request) -> dict:
         send_card_fn=_send_card,
         open_id=open_id,
     )
+
+    if not approved:
+        logger.warning("Tool approval denied/expired for user %s, cancelling CLI loop to prevent retry spam.", open_id)
+        from app.agent.cli_loop import claude_cli_loop
+        claude_cli_loop.cancel_by_user(open_id)
 
     decision = "allow" if approved else "deny"
     reason = "用户已批准" if approved else "用户已拒绝"

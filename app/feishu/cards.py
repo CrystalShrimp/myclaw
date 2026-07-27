@@ -285,6 +285,210 @@ def build_tool_result_card(
     }
 
 
+# ===== Reuse-last-settings Card (after workspace switch) =====
+
+
+def build_reuse_last_card(
+    approval_id: str,
+    profile_label: str,
+    level: str,
+    mode: str,
+) -> dict:
+    """After /cd, ask whether to reuse last provider/model/mode or re-pick.
+
+    Shown only when the user has prior preferences and just switched workspace.
+    """
+    mode_desc = {
+        "h": "🛡️ 严格模式 (高风险全审批)",
+        "m": "⚖️ 平衡模式 (写操作审批)",
+        "l": "⚡ 全自动模式 (低风险放行)",
+    }.get(mode, mode)
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "工作区已切换 — 沿用上次配置？"},
+            "template": "turquoise",
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        "📋 **上次设置：**\n"
+                        f"• 供应商：`{profile_label}`\n"
+                        f"• 规格：`{level}`\n"
+                        f"• 模式：`{mode_desc}`"
+                    ),
+                },
+            },
+            {"tag": "hr"},
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "✅ 沿用上次"},
+                        "type": "primary",
+                        "value": {"approval_id": approval_id, "act": "reuse_yes", "type": "reuse_confirm"},
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🔄 重新设置"},
+                        "type": "default",
+                        "value": {"approval_id": approval_id, "act": "reuse_no", "type": "reuse_confirm"},
+                    },
+                ],
+            },
+        ],
+    }
+
+
+# ===== Progress Card (single persistent card per task) =====
+
+
+_PROGRESS_STATUS = {
+    # status       emoji  label-suffix          color
+    "running":     ("🔧", "执行中",              "blue"),
+    "retrying":    ("🔄", "API 重试中",          "yellow"),
+    "awaiting":    ("⏸",  "等待审批",            "grey"),
+    "completed":   ("✅", "执行完成",            "green"),
+    "failed":      ("❌", "执行失败",            "red"),
+    "cancelled":   ("⏹",  "已取消",              "grey"),
+}
+
+
+def _fmt_duration(s: float) -> str:
+    """12:34 / 1:23:45 style duration."""
+    if s < 0:
+        s = 0
+    m, sec = divmod(int(s), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+
+
+def _fmt_tool_progress(tool_counts: dict) -> str:
+    """`Bash 152 · Read 21 · Edit 7` style breakdown, top 3 + total."""
+    if not tool_counts:
+        return "0 次"
+    items = sorted(tool_counts.items(), key=lambda kv: -kv[1])
+    top = " · ".join(f"{name} {cnt}" for name, cnt in items[:3])
+    total = sum(tool_counts.values())
+    extra = f" +{len(items) - 3}" if len(items) > 3 else ""
+    return f"{top}{extra} · 共 {total} 次"
+
+
+def build_progress_card(
+    model: str,
+    status: str = "running",
+    *,
+    step: int = 0,
+    tool_counts: dict | None = None,
+    elapsed_s: float = 0.0,
+    warnings: int = 0,
+    current_tool: str = "",
+    current_tool_args: str = "",
+    last_text: str = "",
+    last_warning: str = "",
+    session_id: str = "",
+    # Final-state-only fields
+    result_text: str = "",
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    error: str = "",
+) -> dict:
+    """单卡全生命周期进度卡。
+
+    状态机：running → (retrying/awaiting) → completed/failed/cancelled.
+    整个任务期间只 PATCH 这一张卡，不再开新卡。
+
+    status: running | retrying | awaiting | completed | failed | cancelled
+    """
+    tool_counts = tool_counts or {}
+    emoji, label, color = _PROGRESS_STATUS.get(status, _PROGRESS_STATUS["running"])
+    sid_hint = f" [{session_id[:8]}]" if session_id else ""
+    step_hint = f" · 步骤 {step}" if step and status in ("running", "retrying", "awaiting") else ""
+    title = f"[{model}] {emoji} {label}{step_hint}{sid_hint}"
+
+    elements: list[dict] = []
+
+    if status in ("running", "retrying", "awaiting"):
+        # Progress block
+        progress_lines = []
+        if current_tool:
+            tool_line = f"**当前工具:** {current_tool}"
+            if current_tool_args:
+                tool_line += f" · {current_tool_args}"
+            progress_lines.append(tool_line)
+        progress_lines.append(f"**进度:** {_fmt_tool_progress(tool_counts)}")
+        warn_line = f"**耗时:** {_fmt_duration(elapsed_s)}"
+        if warnings > 0:
+            warn_line += f" · ⚠ {warnings} 警告"
+        progress_lines.append(warn_line)
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "\n".join(progress_lines)},
+        })
+
+        # Last thinking snapshot (truncated)
+        if last_text:
+            snapshot = last_text if len(last_text) <= 600 else (last_text[:600] + "…")
+            elements.append({"tag": "hr"})
+            elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**最近思考:**\n> {snapshot}"},
+            })
+        elif last_warning:
+            elements.append({"tag": "hr"})
+            warn_snap = last_warning if len(last_warning) <= 400 else (last_warning[:400] + "…")
+            elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**最近警告:**\n> {warn_snap}"},
+            })
+
+    else:  # completed / failed / cancelled
+        # Final stats
+        stats_lines = [
+            f"**耗时:** {_fmt_duration(elapsed_s)} · **工具:** {sum(tool_counts.values())} 次",
+        ]
+        if input_tokens > 0 or output_tokens > 0:
+            stats_lines.append(f"**Tokens:** ↑{input_tokens:,} ↓{output_tokens:,}")
+        if session_id:
+            stats_lines.append(f"**Session:** `{session_id}`")
+        if warnings > 0:
+            stats_lines.append(f"**警告:** {warnings}")
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": " · ".join(stats_lines[:2]) + ("\n" + "\n".join(stats_lines[2:]) if len(stats_lines) > 2 else "")},
+        })
+
+        if error:
+            elements.append({"tag": "hr"})
+            err_snap = error if len(error) <= 500 else (error[:500] + "…")
+            elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**错误:**\n{err_snap}"},
+            })
+
+        if result_text:
+            elements.append({"tag": "hr"})
+            display = result_text if len(result_text) <= 3500 else (result_text[:3500] + f"\n\n… (truncated, total {len(result_text)} chars)")
+            elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**结果:**\n{display}"},
+            })
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": title},
+            "template": color,
+        },
+        "elements": elements,
+    }
+
+
 # ===== Error Card =====
 
 
@@ -638,7 +842,7 @@ def build_help_card() -> dict:
         "- `/compact` : 压缩当前会话上下文\n"
         "- `/clean` : 清理旧会话数据\n\n"
         "**🛠️ 实用工具**\n"
-        "- `/mem <内容>` : 记录备忘信息到当前工作区的 `CLAUDE.md`\n"
+        "- `/mem` : 显示当前工作区 CLAUDE.md 内容；`/mem <内容>` 追加；`/mem clear` 清空\n"
         "- `/sh <command>` : 在当前工作区执行一条终端命令 (30秒超时)\n"
         "- `/help` (或 `帮助`) : 显示本帮助手册"
     )
@@ -658,11 +862,11 @@ def build_help_card() -> dict:
 
 
 def build_mode_selection_card(approval_id: str = "", active_mode: str = "") -> dict:
-    """Build a selection card for Approval Mode (h: High Tolerance / Auto, m: Medium / Balanced, l: Low Tolerance / Strict)."""
+    """Build a selection card for Approval Mode (h: High Risk / Strict, m: Medium / Balanced, l: Low Risk / Auto)."""
     options = [
-        ("h", "⚡ 全自动模式 (h)", "高容忍放行，全自动运行", "success"),
+        ("h", "🛡️ 严格模式 (h)", "高风险：所有工具调用都需确认", "warning"),
         ("m", "⚖️ 平衡模式 (m)", "只读自动放行，敏感写操作需确认", "primary"),
-        ("l", "🛡️ 严格模式 (l)", "低容忍拦截，所有敏感/操作需确认", "warning"),
+        ("l", "⚡ 全自动模式 (l)", "低风险：高容忍放行，全自动运行", "success"),
     ]
     actions = []
     for mode_code, title, desc, btn_type in options:
@@ -687,7 +891,7 @@ def build_mode_selection_card(approval_id: str = "", active_mode: str = "") -> d
             "tag": "div",
             "text": {
                 "tag": "lark_md",
-                "content": "请选择 **工具执行审批模式 (Mode)**：\n- **⚡ 全自动模式 (h)**：高容忍静默运行，无需打扰。\n- **⚖️ 平衡模式 (m)**：只读自动放行，写操作需审批。\n- **🛡️ 严格模式 (l)**：低容忍严格把关，需人工确认。"
+                "content": "请选择 **工具执行审批模式 (Mode)**：\n- **🛡️ 严格模式 (h)**：高风险，所有工具调用都需确认。\n- **⚖️ 平衡模式 (m)**：只读自动放行，写操作需审批。\n- **⚡ 全自动模式 (l)**：低风险，高容忍静默运行。"
             }
         },
         {"tag": "hr"},

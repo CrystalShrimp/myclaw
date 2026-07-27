@@ -11,7 +11,6 @@ Flow:
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 
@@ -66,7 +65,7 @@ async def pre_tool_use(request: Request) -> dict:
     try:
         data = await request.json()
     except Exception:
-        return {"decision": "allow", "reason": "invalid input, allowing"}
+        return {"permissionDecision": "allow", "permissionDecisionReason": "invalid input, allowing"}
 
     tool_name = data.get("tool_name", "unknown")
     tool_input = data.get("tool_input", {})
@@ -82,17 +81,17 @@ async def pre_tool_use(request: Request) -> dict:
     reg = session_registry.get(claude_session_id)
     if not reg:
         logger.warning("No session registry for %s, allowing", claude_session_id)
-        _hook_log.append(f"→ ALLOW (no registry entry)")
-        return {"decision": "allow", "reason": "session not tracked"}
+        _hook_log.append("→ ALLOW (no registry entry)")
+        return {"permissionDecision": "allow", "permissionDecisionReason": "session not tracked"}
 
     open_id = reg["open_id"]
-    mode = reg.get("approval_mode", "m")  # 'h' = high tolerance (auto), 'm' = medium (balanced), 'l' = low tolerance (strict)
+    mode = reg.get("approval_mode", "m")  # 'h' = high risk (strict), 'm' = medium (balanced), 'l' = low risk (auto)
 
-    # --- Mode h (⚡ 全自动模式 / Full Auto): 100% 自动放行一切工具（包含 Edit, Write, Bash） ---
-    if mode == "h":
-        logger.info("Mode h (Full Auto): auto-allowing tool %s", tool_name)
-        _hook_log.append(f"→ ALLOW ({tool_name} auto-allowed in full auto mode h)")
-        return {"decision": "allow", "reason": "full auto mode h"}
+    # --- Mode l (⚡ 全自动模式 / Low Risk Auto): 100% 自动放行一切工具（包含 Edit, Write, Bash） ---
+    if mode == "l":
+        logger.info("Mode l (Low Risk Auto): auto-allowing tool %s", tool_name)
+        _hook_log.append(f"→ ALLOW ({tool_name} auto-allowed in low-risk mode l)")
+        return {"permissionDecision": "allow", "permissionDecisionReason": "low-risk auto mode l"}
 
     # --- Mode m (⚖️ 平衡模式 / Medium): 自动放行只读/安全工具，仅拦截高风险写操作 ---
     if mode == "m":
@@ -100,9 +99,9 @@ async def pre_tool_use(request: Request) -> dict:
         if not needs_approval:
             logger.info("Mode m (Balanced): auto-allowing tool %s", tool_name)
             _hook_log.append(f"→ ALLOW ({tool_name} low risk in mode m)")
-            return {"decision": "allow", "reason": "balanced mode m"}
+            return {"permissionDecision": "allow", "permissionDecisionReason": "balanced mode m"}
 
-    # --- Mode l (🛡️ 严格模式 / Low Tolerance) 或 高风险写操作: 发送确认卡片 ---
+    # --- Mode h (🛡️ 严格模式 / High Risk) 或 高风险写操作: 发送确认卡片 ---
     approval_id = uuid.uuid4().hex[:12]
     _hook_log.append(f"→ SENDING CARD approval_id={approval_id} to open_id={open_id}")
 
@@ -121,7 +120,7 @@ async def pre_tool_use(request: Request) -> dict:
             raise
 
     # Use the actual risk analysis result for both audit log and approval tracking
-    actual_high_risk = (mode == "l") or _is_high_risk(tool_name, tool_input)
+    actual_high_risk = (mode == "h") or _is_high_risk(tool_name, tool_input)
 
     approved = await approval_manager.request_tool_approval(
         tool_name=tool_name,
@@ -141,7 +140,7 @@ async def pre_tool_use(request: Request) -> dict:
     _hook_log.append(f"→ {decision} ({reason})")
     logger.info("PreToolUse decision: %s for %s (mode=%s)", decision, tool_name, mode)
 
-    return {"decision": decision, "reason": reason}
+    return {"permissionDecision": decision, "permissionDecisionReason": reason}
 
 
 @router.get("/debug/hooks")

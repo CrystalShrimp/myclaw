@@ -6,7 +6,11 @@ It forwards the tool info to the Python server via HTTP,
 which sends a Feishu approval card and blocks until the user responds.
 
 Input:  JSON on stdin  {"tool_name": "...", "tool_input": {...}, "session_id": "..."}
-Output: JSON on stdout {"decision": "allow"/"deny", "reason": "..."}
+Output: JSON on stdout {"permissionDecision": "allow"/"deny", "permissionDecisionReason": "..."}
+
+Schema note: Claude CLI ≥2.1 expects ``permissionDecision`` (allow/deny/ask) or
+``decision`` (approve/block). Older ``decision: "allow"/"deny"`` is invalid and
+triggers "Hook JSON output validation failed" warnings on every tool call.
 """
 import json
 import os
@@ -35,7 +39,7 @@ def main():
         data = json.load(sys.stdin)
     except Exception:
         # Can't parse — deny for security (fail-close)
-        print(json.dumps({"decision": "deny", "reason": "MyClaw 审批 Hook 解析输入失败"}))
+        print(json.dumps({"permissionDecision": "deny", "permissionDecisionReason": "MyClaw 审批 Hook 解析输入失败"}))
         return
 
     # Forward to Python server
@@ -54,14 +58,14 @@ def main():
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         print(json.dumps({
-            "decision": "deny",
-            "reason": f"MyClaw 审批服务异常 (HTTP {e.code})，出于安全保护已拒绝工具执行: {body[:150]}",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": f"MyClaw 审批服务异常 (HTTP {e.code})，出于安全保护已拒绝工具执行: {body[:150]}",
         }))
     except Exception as e:
         # Fail-close: deny on connection error or timeout for security
         print(json.dumps({
-            "decision": "deny",
-            "reason": f"MyClaw 审批服务断连 ({type(e).__name__})，出于安全保护已拒绝工具执行",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": f"MyClaw 审批服务断连 ({type(e).__name__})，出于安全保护已拒绝工具执行",
         }))
 
 

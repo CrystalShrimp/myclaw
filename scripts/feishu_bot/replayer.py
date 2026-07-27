@@ -159,7 +159,7 @@ async def step_create_app(page, name: str, desc: str) -> str:
 
 
 async def step_get_secret(page, app_id: str) -> str:
-    print(f"[2/8] 抓 App Secret")
+    print("[2/8] 抓 App Secret")
     data = await call_api(page, f"/developers/v1/secret/{app_id}", {})
     secret = data.get("secret")
     if not secret:
@@ -169,7 +169,7 @@ async def step_get_secret(page, app_id: str) -> str:
 
 
 async def step_build_scope_map(page, app_id: str) -> dict[str, str]:
-    print(f"[3/8] 拉 scope 全量列表")
+    print("[3/8] 拉 scope 全量列表")
     data = await call_api(page, f"/developers/v1/scope/all/{app_id}", {})
     scopes: list = []
     for key in ("scopes", "allScopes", "scopeList"):
@@ -193,7 +193,7 @@ async def step_build_scope_map(page, app_id: str) -> dict[str, str]:
 
 
 async def step_import_permissions(page, app_id: str, name_to_id: dict[str, str], perms: dict) -> None:
-    print(f"[4/8] 导入权限")
+    print("[4/8] 导入权限")
     tenant_names = (perms.get("scopes") or {}).get("tenant") or []
     user_names = (perms.get("scopes") or {}).get("user") or []
     tenant_ids, tenant_missing = [], []
@@ -221,7 +221,7 @@ async def step_import_permissions(page, app_id: str, name_to_id: dict[str, str],
 
 
 async def step_enable_bot(page, app_id: str) -> None:
-    print(f"[5/8] 启用机器人能力")
+    print("[5/8] 启用机器人能力")
     await call_api(page, f"/developers/v1/robot/switch/{app_id}", {"enable": True})
 
 
@@ -273,7 +273,7 @@ async def step_create_version(page, app_id: str, version: str, change_log: str, 
 
 
 async def step_publish(page, app_id: str, version_id: str) -> None:
-    print(f"[8/8] 提交发布")
+    print("[8/8] 提交发布")
     await call_api(page, f"/developers/v1/publish/commit/{app_id}/{version_id}", {})
 
 

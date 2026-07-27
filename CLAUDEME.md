@@ -461,8 +461,9 @@ _HIGH_RISK_KEYWORDS = (
 
 项目根目录已自带：
 
-- `MyClaw.bat`：调用 `scripts/start.bat` 启动
+- `MyClaw.bat`：直接启动托盘 + 后端服务
 - `MyClaw-Debug.bat`：开 console 模式，禁代理，检测端口占用，崩了不退出（看错误）
+- `MyClaw-Restart.bat`：杀掉旧进程并重启服务（直接用 .venv 的 python 跑 restart_service.py）
 
 把 `MyClaw.bat`（右键 → 创建快捷方式）放到启动文件夹：
 
@@ -693,7 +694,6 @@ myclaw/                              # 项目根目录
 ├── scripts/
 │   ├── hooks/pre_tool_use.py        # PreToolUse hook 脚本（claude 子进程调用）
 │   ├── tray.pyw                     # Windows 系统托盘版启动器
-│   ├── start.bat                    # bat 启动脚本
 │   ├── restart_service.py           # 重启服务工具
 │   ├── diagnose_deepseek.py         # DeepSeek 诊断工具
 │   └── feishu_bot/                  # ⚠️ 早期自动化废弃产物（仅 MANUAL_SETUP.md 和 openclaw-scopes.json 有用）

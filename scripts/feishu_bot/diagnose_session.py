@@ -495,7 +495,7 @@ async def main():
 
         print("\n" + "=" * 50)
         print(f"scope 映射验证: {'✅ 通过' if passed else '❌ 未通过'}")
-        print(f"本轮是否发送配置变更请求: 否（仅 /scope/all 只读）")
+        print("本轮是否发送配置变更请求: 否（仅 /scope/all 只读）")
         print("=" * 50)
 
         await cdp.detach()

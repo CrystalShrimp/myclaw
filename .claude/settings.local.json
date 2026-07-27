@@ -5,7 +5,10 @@
       "Bash(python:*)",
       "Bash(pip show:*)",
       "Bash(pip list:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(mkdir -p ~/.claude/file-history/7bf1d3f0-c1af-4d79-99b8-9b3e17e33f50)",
+      "Read(//c/Users/21109/.claude/file-history/**)",
+      "Read(//c/Users/21109/.claude/**)"
     ]
   }
 }

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from config.settings import settings
 from app.models.schemas import ApprovalRequest, ApprovalStatus, ParsedCommand, RiskLevel
@@ -205,7 +205,6 @@ class ApprovalManager:
         Returns:
             (approved, final_model) — approved=True and the (possibly switched) model.
         """
-        from app.feishu.cards import build_model_selection_card
         import uuid as _uuid
         approval_id = _uuid.uuid4().hex[:12]
 

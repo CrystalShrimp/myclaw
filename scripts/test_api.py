@@ -53,7 +53,7 @@ def test_api(base_url: str, api_key: str, model: str) -> None:
         print(f"  Error: {e}")
         sys.exit(1)
     except httpx.TimeoutException:
-        print(f"FAIL: Request timed out (30s)")
+        print("FAIL: Request timed out (30s)")
         sys.exit(1)
 
     print(f"Status:  {resp.status_code}")
@@ -71,7 +71,7 @@ def test_api(base_url: str, api_key: str, model: str) -> None:
 
     print(f"Reply:   {reply}")
     print(f"Tokens:  in={usage.get('input_tokens', '?')} out={usage.get('output_tokens', '?')}")
-    print(f"\nAPI OK")
+    print("\nAPI OK")
 
 
 def main():

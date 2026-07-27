@@ -173,3 +173,4 @@ class Session(BaseModel):
     context_tokens: int = 0      # last input_tokens (context usage proxy)
     context_limit: int = 200000  # context window limit
     pending_prompt: str = ""     # Prompt pending auto-retry after initial setup
+    pending_reuse_confirm: bool = False  # After /cd: ask user to reuse last settings or re-pick

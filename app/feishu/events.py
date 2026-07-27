@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import subprocess
 import threading
 import time
 import uuid
@@ -16,7 +15,7 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
     CallBackToast,
 )
 
-from app.agent.cli_loop import claude_cli_loop
+from app.agent.cli_loop import claude_cli_loop, _kill_process_tree
 from app.approval.manager import approval_manager
 from app.feishu.client import feishu_client
 from app.audit.logger import audit_logger
@@ -558,7 +557,7 @@ async def _check_and_run_pending(open_id: str) -> bool:
             session_manager.save_session(session)
 
             profile_label = profiles.get(preferences.model, {}).get("label", preferences.model)
-            mode_labels = {"h": "⚡ 全自动模式 (h)", "m": "⚖️ 平衡模式 (m)", "l": "🛡️ 严格模式 (l)"}
+            mode_labels = {"h": "🛡️ 严格模式 (h)", "m": "⚖️ 平衡模式 (m)", "l": "⚡ 全自动模式 (l)"}
             mode_lbl = mode_labels.get(preferences.mode, preferences.mode)
 
             prompt_preview = pending if len(pending) <= 30 else pending[:27] + "..."
@@ -826,7 +825,7 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         preferences.mode = target_mode
         preferences_manager.save(open_id, preferences)
 
-        triggered = asyncio.get_running_loop().create_task(_check_and_run_pending(open_id))
+        asyncio.get_running_loop().create_task(_check_and_run_pending(open_id))
 
         resp = P2CardActionTriggerResponse()
         toast = CallBackToast()
@@ -887,6 +886,32 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         )
         resp.toast = toast
         return resp
+    # Reuse-last-settings card after /cd
+    if card_type == "reuse_confirm":
+        session = session_manager.get_user_session(open_id)
+        pending = session.pending_prompt.strip() if session else ""
+        if session:
+            session.pending_reuse_confirm = False
+            session_manager.save_session(session)
+        reuse = (act == "reuse_yes")
+        if not reuse:
+            # User opted to re-pick: wipe preferences so next _run_claude shows setup cards.
+            preferences_manager.clear(open_id)
+        toast = P2CardActionTriggerResponse()
+        toast_msg = "沿用上次设置" if reuse else "已清空，重新选择"
+        # Re-trigger the queued prompt with the (preserved or cleared) prefs.
+        if pending and session:
+            session.pending_prompt = ""
+            session_manager.save_session(session)
+            asyncio.get_running_loop().create_task(_run_claude(pending, open_id, session))
+        # Simple toast for the click.
+        resp = P2CardActionTriggerResponse()
+        toast_cb = CallBackToast()
+        toast_cb.type = "success" if reuse else "info"
+        toast_cb.content = toast_msg
+        resp.toast = toast_cb
+        return resp
+
     approved = act == "approve"
     card_label = "工具执行" if card_type == "tool_execution" else "审批"
     asyncio.get_running_loop().create_task(
@@ -1187,14 +1212,19 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
             session.claude_session_id = "__continue__"  # 切换工作区后全自动带 --continue 恢复该项目最新 Session 历史
             session_manager.save_session(session)
 
-        preferences_manager.clear(open_id)
+        # Don't blindly clear preferences on /cd — ask the user first.
+        # If they had any prior config (cross-workspace), the next message
+        # triggers a "reuse last?" card; only on reject do we wipe & re-setup.
+        preferences = preferences_manager.get(open_id)
+        if preferences.complete:
+            session.pending_reuse_confirm = True
+            session_manager.save_session(session)
         resolved_workspace = str(p.resolve())
         _write_env_value("DEFAULT_WORKSPACE", resolved_workspace)
         settings.default_workspace = resolved_workspace
         claude_cli_loop.cancel_by_user(open_id)
-        
-        action_msg = "已在新目录新建并切换" if is_new else "工作区已切换"
-        await feishu_client.send_text(open_id, f"📁 {action_msg}：`{session.workspace}`")
+
+        await feishu_client.send_text(open_id, f"📁 工作区已切换：`{session.workspace}`")
         return
 
     # --- /resume <session_id>: switch to one exact native session ---
@@ -1285,21 +1315,65 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
         await _run_claude("/compact", open_id, session, skip_classify=True)
         return
 
-    # --- /mem <text>: append memo to CLAUDE.md in current workspace ---
-    # CLAUDE.md is the filename claude auto-loads as in-session memory,
-    # so writing there means the next prompt sees the memo with no extra
-    # wiring. Legacy AGENT.md is migrated on first write.
-    if text_lower.startswith("/mem "):
-        content = text[5:].strip()
-        if not content:
-            await feishu_client.send_text(
-                open_id, "用法: `/mem <内容>`，例如 `/mem CSMAR弹窗需要先关闭才能操作`",
-            )
-            return
+    # --- /mem: workspace memo in CLAUDE.md ---
+    # `/mem`           → show current content
+    # `/mem <text>`    → append a line
+    # `/mem clear`     → wipe
+    if text_lower == "/mem" or text_lower.startswith("/mem "):
+        arg = text[4:].strip()  # text after "/mem"
         session = session_manager.get_user_session(open_id)
         workspace = session.workspace if session else settings.get_default_workspace()
         memory_md = Path(workspace) / "CLAUDE.md"
         legacy_md = Path(workspace) / "AGENT.md"
+
+        # `/mem` (no arg) → list current memory
+        if not arg:
+            try:
+                if memory_md.exists():
+                    body = memory_md.read_text("utf-8")
+                elif legacy_md.exists():
+                    body = legacy_md.read_text("utf-8")
+                else:
+                    await feishu_client.send_text(
+                        open_id,
+                        f"📝 当前工作区 `{workspace}` 还没有 CLAUDE.md。\n"
+                        f"用法：`/mem <内容>` 追加；`/mem clear` 清空。",
+                    )
+                    return
+                char_count = len(body)
+                PREVIEW_LIMIT = 4000
+                if char_count <= PREVIEW_LIMIT:
+                    preview = body
+                    trunc_note = ""
+                else:
+                    preview = body[:PREVIEW_LIMIT]
+                    trunc_note = f"\n\n…（共 {char_count} 字符，仅显示前 {PREVIEW_LIMIT}）"
+                await feishu_client.send_text(
+                    open_id,
+                    f"📝 `{workspace}` 的 CLAUDE.md（{char_count} 字符）：\n```\n{preview}```{trunc_note}",
+                )
+            except Exception as e:
+                await feishu_client.send_text(open_id, f"读取失败: {e}")
+            return
+
+        # `/mem clear` → wipe memory file
+        if arg.lower() in ("clear", "reset", "清空"):
+            try:
+                if memory_md.exists():
+                    memory_md.unlink()
+                    await feishu_client.send_text(
+                        open_id, f"已清空 `{workspace}` 下的 CLAUDE.md。",
+                    )
+                else:
+                    await feishu_client.send_text(
+                        open_id, f"`{workspace}` 下没有 CLAUDE.md，无需清空。",
+                    )
+            except Exception as e:
+                await feishu_client.send_text(open_id, f"清空失败: {e}")
+            return
+
+        # `/mem <text>` → append
+        content = arg
         try:
             # One-shot migration: fold legacy AGENT.md into CLAUDE.md so
             # claude actually picks it up.
@@ -1317,6 +1391,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
         except Exception as e:
             await feishu_client.send_text(open_id, f"写入失败: {e}")
         return
+
 
     # --- /sh <command>: execute shell command in workspace ---
     if text_lower.startswith("/sh "):
@@ -1339,7 +1414,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
             out = _decode_output(stdout).strip()
             err = _decode_output(stderr).strip()
         except asyncio.TimeoutError:
-            proc.kill()
+            _kill_process_tree(proc)
             await feishu_client.send_text(open_id, f"⏱️ 命令超时(30s): `{cmd}`")
             return
         except Exception as e:
@@ -1382,6 +1457,25 @@ async def _run_claude(
 
         preferences = preferences_manager.get(open_id)
         profiles = discover_profiles()
+
+        # After a recent /cd into a new workspace, ask whether to reuse last
+        # provider/model/mode before running. Only trigger if prefs are complete
+        # (otherwise the existing "first-time setup" path below handles it).
+        if session.pending_reuse_confirm and preferences.complete:
+            session.pending_prompt = prompt
+            session_manager.save_session(session)
+            from app.feishu.cards import build_reuse_last_card
+            profile_label = profiles.get(preferences.model, {}).get("label", preferences.model)
+            await feishu_client.send_card(
+                open_id,
+                build_reuse_last_card(
+                    approval_id=uuid.uuid4().hex[:12],
+                    profile_label=profile_label,
+                    level=preferences.level,
+                    mode=preferences.mode,
+                ),
+            )
+            return
 
         need_provider = preferences.model not in profiles
         need_level = preferences.level not in ("haiku", "sonnet", "opus")
@@ -1454,31 +1548,6 @@ async def _run_claude(
         # persists the full conversation in ~/.claude/projects/*/<sid>.jsonl,
         # which _iter_claude_session_messages reads back on demand.
 
-        # Build context warning suffix for notifications
-        ctx_warning = ""
-        if session.context_tokens > 0:
-            ctx_pct = session.context_tokens / session.context_limit * 100
-            if ctx_pct >= settings.context_critical_percent:
-                if settings.compact_enabled:
-                    ctx_warning = (
-                        f"\n\n🚨 **上下文已用 {ctx_pct:.0f}%，即将耗尽！**\n"
-                        f"使用 `/compact` 压缩上下文继续对话，或 `/new` 开始全新会话。"
-                    )
-                else:
-                    ctx_warning = (
-                        f"\n\n🚨 **上下文已用 {ctx_pct:.0f}%，即将耗尽！**\n"
-                        f"请使用 `/new` 开始新会话，否则后续对话可能报错。"
-                    )
-            elif ctx_pct >= settings.context_warn_percent:
-                if settings.compact_enabled:
-                    ctx_warning = (
-                        f"\n\n⚠️ 上下文用量: {ctx_pct:.0f}%，可以用 `/compact` 压缩上下文。"
-                    )
-                else:
-                    ctx_warning = (
-                        f"\n\n⚠️ 上下文用量: {ctx_pct:.0f}%，建议适时用 `/new` 开新会话。"
-                    )
-
         # Persist session to disk
         session_manager.save_session(session)
 
@@ -1487,33 +1556,7 @@ async def _run_claude(
         except ValueError:
             session.status = TaskStatus.COMPLETED
 
-        # Send result summary notification
-        if agent_result.status == "completed":
-            sid_hint = ""
-            if session.claude_session_id and session.claude_session_id != "__continue__":
-                sid_hint = f"\nClaude Session: `{session.claude_session_id}`"
-            ctx_info = ""
-            if session.context_tokens > 0:
-                ctx_info = f" | 上下文: {session.context_tokens:,}"
-            await feishu_client.send_text(
-                open_id,
-                f"✅ 任务完成 | 耗时: {agent_result.duration_s:.1f}s | "
-                f"工具: {len(agent_result.tools_used)}次 | "
-                f"费用: ${agent_result.cost_usd:.4f}{ctx_info}"
-                f"{sid_hint}\n\n"
-                f"直接发消息即可继续对话，或用 `/continue` 恢复上次会话。"
-                f"{ctx_warning}",
-            )
-        elif agent_result.status == "failed":
-            await feishu_client.send_text(
-                open_id,
-                f"❌ 任务失败 | 原因: {agent_result.error[:200]}\n\n"
-                f"发消息即可重试，或用 `/continue` 恢复会话。"
-                f"{ctx_warning}",
-            )
-        elif agent_result.status == "cancelled":
-            await feishu_client.send_text(open_id, "任务已取消。发消息即可开始新任务。")
-
+        # Result summary is shown on the progress card itself; no extra text message.
         audit_logger.log_command_received(open_id, prompt, agent_result.status)
 
     except Exception as e:

@@ -11,14 +11,87 @@ import json
 import logging
 import os
 import shutil
+import signal
+import subprocess
+import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
 
+
+def _summarize_tool_args(name: str, args: dict) -> str:
+    """One-line summary of what a tool is doing, for the progress card."""
+    if not isinstance(args, dict):
+        return ""
+    if name == "Bash":
+        cmd = (args.get("command") or "").strip()
+        if not cmd:
+            return ""
+        first = cmd.split("&&")[0].split("|")[0].split(";")[0].strip()
+        return f"`{first[:80]}`" if len(first) <= 80 else f"`{first[:77]}…`"
+    if name in ("Read", "Write", "Edit", "NotebookEdit"):
+        path = args.get("file_path") or ""
+        if not path:
+            return ""
+        leaf = path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        return f"`{leaf}`"
+    if name == "Grep":
+        pat = (args.get("pattern") or "").strip()
+        return f"`{pat[:40]}`" if pat else ""
+    if name == "Glob":
+        pat = (args.get("pattern") or "").strip()
+        return f"`{pat[:40]}`" if pat else ""
+    if name in ("TaskCreate", "TaskUpdate"):
+        subj = (args.get("subject") or "").strip()
+        return f"`{subj[:40]}`" if subj else ""
+    return ""
+
+
+def _extract_warning_summary(attachment: dict) -> str:
+    """Short human-readable summary from an attachment event (hook error etc.)."""
+    name = attachment.get("hookName") or attachment.get("type") or "attachment"
+    stderr = (attachment.get("stderr") or "").strip()
+    # First non-empty line of stderr is usually the cause
+    first_line = next((ln for ln in stderr.splitlines() if ln.strip()), "")
+    if first_line:
+        return f"{name}: {first_line[:120]}"
+    return name
+
+
+def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
+    """Kill a subprocess and ALL its descendants.
+
+    Claude CLI spawns deep trees (claude → bash → python → WINWORD/LibreOffice).
+    On Windows, TerminateProcess only kills the direct child, leaving orphans
+    that hold GUI modal dialogs (e.g. Word's "save changes?" prompt) open
+    forever. Use taskkill /T (tree) on Windows or killpg on Unix to tear down
+    the whole subtree.
+    """
+    if proc.returncode is not None:
+        return
+    pid = proc.pid
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True,
+                check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+            )
+        else:
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+    except Exception:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
 from config.settings import settings
 from app.feishu.cards import (
-    build_streaming_card,
-    build_tool_result_card,
+    build_progress_card,
     build_error_card,
 )
 from app.feishu.client import feishu_client
@@ -249,22 +322,36 @@ class ClaudeCLILoop:
                     prompt, "stdin writer not available (process may have crashed)",
                 )
 
-            # Per-message state: card + text accumulator (isolated from other messages)
+            # Per-message state: single persistent progress card, event-driven updates.
+            # Design rationale: previous design opened a new card every 3000 chars of
+            # streamed text, producing 4+ fragmented cards per long task. Now one card
+            # transits running → (retrying/awaiting) → completed/failed/cancelled,
+            # PATCHed only on meaningful events (tool_use / attachment / api_retry / result).
             msg_state = {
-                "text": "",
-                "tools": [],
-                "tool_count": 0,
-                "last_update": 0.0,
+                # Card identity
                 "card_id": "",
+                "model": chosen,
+                # Progress counters
+                "step": 0,
+                "tool_counts": {},
+                "warnings": 0,
+                "last_warning": "",
+                "started_at": asyncio.get_event_loop().time(),
+                "last_patch_at": 0.0,
+                # Tool/thinking display state
+                "current_tool": "",
+                "current_tool_args": "",
+                "current_text": "",      # text accumulated since last tool_use boundary
+                "last_text": "",         # snapshot of last completed text block
             }
 
-            # Create a fresh streaming card for this message
+            # Create the single progress card (running state, empty body)
             try:
-                card = build_streaming_card(chosen, "")
+                card = build_progress_card(chosen, "running")
                 card_msg = await feishu_client.send_card(open_id, card)
                 msg_state["card_id"] = card_msg.get("data", {}).get("message_id", "")
             except Exception as e:
-                logger.warning("Failed to create streaming card: %s", e)
+                logger.warning("Failed to create progress card: %s", e)
 
             # Queue future + msg_state BEFORE writing stdin so the reader
             # always finds msg_state for the very first stream_event.
@@ -295,20 +382,14 @@ class ClaudeCLILoop:
         self._stdin_writers.pop(open_id, None)
 
         if old_proc is not None and old_proc.returncode is None:
-            try:
-                old_proc.terminate()
-            except ProcessLookupError:
-                pass
+            _kill_process_tree(old_proc)
 
         if old_task is not None and not old_task.done():
             try:
                 await asyncio.wait_for(old_task, timeout=3.0)
             except asyncio.TimeoutError:
                 if old_proc is not None and old_proc.returncode is None:
-                    try:
-                        old_proc.kill()
-                    except ProcessLookupError:
-                        pass
+                    _kill_process_tree(old_proc)
                 old_task.cancel()
             except asyncio.CancelledError:
                 pass
@@ -330,7 +411,7 @@ class ClaudeCLILoop:
         self._stdin_writers.pop(open_id, None)
 
         if proc and proc.returncode is None:
-            proc.terminate()
+            _kill_process_tree(proc)
             return True
         return False
 
@@ -402,9 +483,9 @@ class ClaudeCLILoop:
                 logger.info("Workspace %s has no native session history, starting fresh clean session.", workspace)
         elif claude_session_id:
             args.extend(["--resume", claude_session_id])
-        # High-tolerance approval mode: skip myclaw's hook entirely
+        # Low-risk auto mode (formerly "h"): skip myclaw's hook entirely
         # and let claude's native bypassPermissions handle everything.
-        if approval_mode == "h":
+        if approval_mode == "l":
             args.extend(["--permission-mode", "bypassPermissions"])
         if chosen:
             args.extend(["--model", chosen])
@@ -442,6 +523,44 @@ class ClaudeCLILoop:
         if entries:
             return entries[0][1]
         return None
+
+    async def _patch_progress(self, msg_state: dict, status: str) -> None:
+        """Rebuild the progress card from msg_state and PATCH it.
+
+        Idempotent and best-effort: any Feishu API error is swallowed since
+        a stale card is preferable to killing the task. Throttled to 0.5s
+        minimum interval between patches to avoid Feishu QPS limits.
+        """
+        card_id = msg_state.get("card_id")
+        if not card_id:
+            return
+        now = asyncio.get_event_loop().time()
+        # Throttle: 0.5s between patches except for state transitions
+        # (status change always patches immediately).
+        prev_status = msg_state.get("last_status")
+        if status == prev_status and now - msg_state.get("last_patch_at", 0) < 0.5:
+            return
+        try:
+            elapsed = now - msg_state.get("started_at", now)
+            # Carry the latest thinking snapshot to display
+            last_text = msg_state.get("current_text") or msg_state.get("last_text", "")
+            card = build_progress_card(
+                msg_state.get("model", ""),
+                status,
+                step=msg_state.get("step", 0),
+                tool_counts=msg_state.get("tool_counts", {}),
+                elapsed_s=elapsed,
+                warnings=msg_state.get("warnings", 0),
+                current_tool=msg_state.get("current_tool", ""),
+                current_tool_args=msg_state.get("current_tool_args", ""),
+                last_text=last_text if status == "running" else "",
+                last_warning=msg_state.get("last_warning", "") if status != "running" else "",
+            )
+            await feishu_client.update_card(card_id, card)
+            msg_state["last_patch_at"] = now
+            msg_state["last_status"] = status
+        except Exception as e:
+            logger.debug("Progress card PATCH failed (non-fatal): %s", e)
 
     # ---- reader loop ----
 
@@ -497,62 +616,69 @@ class ClaudeCLILoop:
                             "approval_mode": approval_mode,
                         }
                     model = event.get("model", model)
+                    if msg_state:
+                        msg_state["model"] = model
+                        await self._patch_progress(msg_state, "running")
 
-                # --- stream_event ---
+                # --- stream_event (text deltas accumulate silently; no PATCH) ---
                 elif etype == "stream_event":
                     delta = event.get("event", {}).get("delta", {})
                     if msg_state and delta.get("type") == "text_delta":
-                        msg_state["text"] += delta.get("text", "")
-                        now = asyncio.get_event_loop().time()
+                        msg_state["current_text"] += delta.get("text", "")
 
-                        # 超长换卡：内容超过阈值时开新卡
-                        CARD_TEXT_LIMIT = 3000
-                        if len(msg_state["text"]) >= CARD_TEXT_LIMIT and msg_state.get("card_id"):
-                            try:
-                                old_final = build_streaming_card(model, msg_state["text"], continued=True)
-                                await feishu_client.update_card(msg_state["card_id"], old_final)
-                                new_card = build_streaming_card(model, msg_state["text"][-1500:])
-                                card_msg = await feishu_client.send_card(open_id, new_card)
-                                msg_state["card_id"] = card_msg.get("data", {}).get("message_id", "")
-                                msg_state["text"] = msg_state["text"][-1500:]
-                                msg_state["last_update"] = now
-                            except Exception:
-                                pass
-                            continue
-
-                        # 正常流式更新
-                        if now - msg_state.get("last_update", 0) >= 0.5 and msg_state.get("card_id"):
-                            try:
-                                update = build_streaming_card(model, msg_state["text"])
-                                await feishu_client.update_card(msg_state["card_id"], update)
-                                msg_state["last_update"] = now
-                            except Exception:
-                                pass
-
-                # --- assistant ---
+                # --- assistant: tool_use boundary triggers PATCH ---
                 elif etype == "assistant":
                     if not msg_state:
                         continue
                     for block in event.get("message", {}).get("content", []):
-                        if block.get("type") == "text":
-                            # Only accumulate if stream_events were NOT sent
-                            # (some providers skip streaming and only send
-                            #  assistant messages).  Otherwise this is a
-                            #  duplicate of what we already streamed.
-                            if not msg_state["text"]:
-                                msg_state["text"] += block.get("text", "")
-                        elif block.get("type") == "tool_use":
-                            msg_state["tool_count"] += 1
-                            msg_state["tools"].append(
+                        btype = block.get("type")
+                        if btype == "text":
+                            # Some providers skip streaming and only emit a final
+                            # assistant text block. Accumulate only if empty.
+                            if not msg_state["current_text"]:
+                                msg_state["current_text"] = block.get("text", "")
+                        elif btype == "tool_use":
+                            tool_name = block.get("name", "unknown")
+                            # Boundary: archive the preceding thinking text, start fresh
+                            if msg_state["current_text"]:
+                                msg_state["last_text"] = msg_state["current_text"]
+                                msg_state["current_text"] = ""
+                            msg_state["step"] += 1
+                            msg_state["tool_counts"][tool_name] = msg_state["tool_counts"].get(tool_name, 0) + 1
+                            idx = msg_state["tool_counts"][tool_name]
+                            msg_state["current_tool"] = f"{tool_name} #{idx}"
+                            msg_state["current_tool_args"] = _summarize_tool_args(
+                                tool_name, block.get("input", {})
+                            )
+                            # Record tool call for audit/final card
+                            if not hasattr(msg_state, "_tools"):
+                                msg_state["tools"] = msg_state.get("tools", [])
+                            msg_state.setdefault("tools", []).append(
                                 ToolCallRecord(
-                                    tool_name=block.get("name", "unknown"),
+                                    tool_name=tool_name,
                                     arguments=block.get("input", {}),
                                 ),
                             )
+                            await self._patch_progress(msg_state, "running")
 
-                # --- user (tool results) ---
+                # --- user (tool results): no PATCH, just internal state ---
                 elif etype == "user":
                     pass
+
+                # --- attachment (hook errors, etc.): increment warnings, PATCH ---
+                elif etype == "attachment":
+                    if msg_state and event.get("attachment", {}).get("type") in (
+                        "hook_non_blocking_error", "hook_blocking_error",
+                    ):
+                        msg_state["warnings"] += 1
+                        msg_state["last_warning"] = _extract_warning_summary(
+                            event.get("attachment", {})
+                        )
+                        # Throttle: don't PATCH more than once per 2s for warning spam
+                        now = asyncio.get_event_loop().time()
+                        if now - msg_state.get("last_warning_patch", 0) >= 2.0:
+                            msg_state["last_warning_patch"] = now
+                            await self._patch_progress(msg_state, "running")
 
                 # --- result ---
                 elif etype == "result":
@@ -564,10 +690,9 @@ class ClaudeCLILoop:
                     attempt = event.get("attempt", 0)
                     max_retries = event.get("max_retries", "?")
                     logger.warning("Claude API retry: attempt=%d", attempt)
-                    await feishu_client.send_text(
-                        open_id,
-                        f"API 重试中 ({attempt}/{max_retries})...",
-                    )
+                    if msg_state:
+                        msg_state["last_warning"] = f"API 重试 {attempt}/{max_retries}"
+                        await self._patch_progress(msg_state, "retrying")
 
             # ---- process exited (stdout EOF) ----
             await proc.wait()
@@ -610,7 +735,7 @@ class ClaudeCLILoop:
             )
 
         except asyncio.CancelledError:
-            proc.kill()
+            _kill_process_tree(proc)
             await proc.wait()
         except Exception as exc:
             logger.exception("Claude read loop error: open_id=%s", open_id)
@@ -644,9 +769,10 @@ class ClaudeCLILoop:
         error = event.get("error", "")
         usage = event.get("usage", {})
 
-        text = msg_state.get("text", "")
+        text = msg_state.get("current_text", "") or msg_state.get("last_text", "")
         tools = msg_state.get("tools", [])
-        tool_count = msg_state.get("tool_count", 0)
+        tool_counts = msg_state.get("tool_counts", {})
+        tool_count = sum(tool_counts.values())
         card_id = msg_state.get("card_id", "")
 
         status = "failed" if subtype.startswith("error") else "completed"
@@ -660,7 +786,7 @@ class ClaudeCLILoop:
             text=result_text,
             tools_used=tools,
             error=error if subtype == "error" else "",
-            session_id=event.get("session_id", ""),
+            session_id=event.get("session_id", "") or self.get_session_id_for_user(open_id) or "",
             cost_usd=cost,
             duration_s=duration_s,
             num_turns=num_turns,
@@ -670,17 +796,23 @@ class ClaudeCLILoop:
             finished_at=datetime.now(),
         )
 
-        # Update streaming card → final result card
+        # Transition progress card → final state (same card_id, no new card).
         if card_id:
             try:
-                final_card = build_tool_result_card(
-                    task_id=task_id,
+                final_status = "cancelled" if status == "cancelled" else status
+                elapsed = asyncio.get_event_loop().time() - msg_state.get("started_at", asyncio.get_event_loop().time())
+                final_card = build_progress_card(
+                    msg_state.get("model", event.get("model", "")),
+                    final_status,
+                    step=msg_state.get("step", 0),
+                    tool_counts=tool_counts,
+                    elapsed_s=elapsed,
+                    warnings=msg_state.get("warnings", 0),
                     result_text=result_text,
-                    status=status,
-                    cost_usd=cost,
-                    duration_s=duration_s,
-                    tools_count=tool_count,
+                    input_tokens=usage.get("input_tokens", 0),
+                    output_tokens=usage.get("output_tokens", 0),
                     error=error,
+                    session_id=result.session_id,
                 )
                 asyncio.create_task(
                     feishu_client.update_card(card_id, final_card),

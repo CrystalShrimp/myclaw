@@ -22,15 +22,14 @@ from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
 from lark_oapi.ws.client import (
     Client as _BaseClient,
     _get_by_key,
-    _new_ping_frame,
     _select,
 )
 from lark_oapi.ws.const import (
     DEVICE_ID, SERVICE_ID,
-    HEADER_MESSAGE_ID, HEADER_TRACE_ID, HEADER_SUM,
+    HEADER_MESSAGE_ID, HEADER_SUM,
     HEADER_SEQ, HEADER_TYPE, HEADER_BIZ_RT,
 )
-from lark_oapi.ws.enum import MessageType, FrameType
+from lark_oapi.ws.enum import MessageType
 from lark_oapi.ws.model import Response
 from lark_oapi.ws.pb.pbbp2_pb2 import Frame
 
@@ -109,7 +108,6 @@ class FeishuWsClient(_BaseClient):
     async def _handle_data_frame(self, frame: Frame) -> None:
         hs = frame.headers
         msg_id = _get_by_key(hs, HEADER_MESSAGE_ID)
-        trace_id = _get_by_key(hs, HEADER_TRACE_ID)
         sum_ = _get_by_key(hs, HEADER_SUM)
         seq = _get_by_key(hs, HEADER_SEQ)
         type_ = _get_by_key(hs, HEADER_TYPE)

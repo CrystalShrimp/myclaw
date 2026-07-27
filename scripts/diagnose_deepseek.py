@@ -355,7 +355,7 @@ def _diagnose_status(status_code: int, body: str) -> None:
         warn("可能原因: API Key 无效或已过期")
     elif status_code == 402:
         warn("可能原因: 账户余额不足，请充值")
-        print(f"  💡 登录 https://platform.deepseek.com 查看余额")
+        print("  💡 登录 https://platform.deepseek.com 查看余额")
     elif status_code == 403:
         warn("可能原因: 账户权限不足或 IP 被封")
     elif status_code == 404:

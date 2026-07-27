@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     approval_timeout: int = 600           # Model selection card timeout (10 min)
     tool_approval_timeout: int = 1800     # Tool execution card timeout (30 min)
     tool_approval_warn_seconds: int = 300 # Warn 5 min before tool approval expires
-    approval_mode: str = "m"  # h=高容忍 m=中(高风险审批) l=低(全审批)
+    approval_mode: str = "m"  # h=高风险(全审批) m=中(高风险审批) l=低风险(全自动放行)
 
     # Access control
     allowed_users: str = ""

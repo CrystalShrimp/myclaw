@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -66,7 +65,7 @@ async def lifespan(app: FastAPI):
         app_secret=settings.feishu_app_secret,
         event_handler=event_handler,
     )
-    ws_task = ws_client.start_async()
+    ws_client.start_async()
     logger.info("Feishu WS client connecting...")
 
     # Profiles are selected per Feishu user and persisted outside Claude sessions.

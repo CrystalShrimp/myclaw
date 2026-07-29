@@ -11,8 +11,10 @@ Flow:
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Request
 
@@ -25,31 +27,78 @@ logger = logging.getLogger("myclaw.hooks")
 
 router = APIRouter(prefix="/hooks", tags=["hooks"])
 
-# High-risk tools that need approval in mode 'm'
-HIGH_RISK_TOOLS = {"Write", "Edit", "NotebookEdit"}
+# Fallback defaults used when config/approval_rules.json is missing or invalid.
+# Keep these in sync with config/approval_rules.json so a missing file degrades
+# gracefully to the documented behavior.
+_DEFAULT_RULES = {
+    "high_risk_tools": ["Write", "Edit", "NotebookEdit"],
+    "safe_command_patterns": [
+        "ls", "dir", "cat", "head", "tail", "find", "grep", "which", "where",
+        "cd", "pwd", "whoami", "echo", "type", "wc", "sort", "uniq", "diff", "file",
+        "stat", "du", "df", "uname", "hostname", "date", "env", "printenv",
+        "git status", "git log", "git diff", "git branch", "git remote", "git show", "git tag",
+        "python --version", "python3 --version", "node --version", "npm --version",
+        "pip list", "pip show", "pip --version", "uv --version", "uv run python -c",
+        "ollama list", "ollama --version",
+        "test ", "test -f", "test -d", "test -e",
+    ],
+    "high_risk_keywords": [
+        "rm ", "rmdir", "del ", "format", "shutdown", "reboot",
+        "pip install", "npm install", "yarn add",
+        "git push", "git reset", "git checkout",
+        "chmod", "chown", "mkfs",
+        "curl -X POST", "curl -X PUT", "curl -X DELETE",
+        "wget ",
+        "> ", ">> ",
+        "ssh ", "scp ",
+    ],
+}
 
-# Bash commands that are always safe (read-only)
-_SAFE_COMMAND_PATTERNS = (
-    "ls", "dir", "cat", "head", "tail", "find", "grep", "which", "where",
-    "cd", "pwd", "whoami", "echo", "type", "wc", "sort", "uniq", "diff", "file",
-    "stat", "du", "df", "uname", "hostname", "date", "env", "printenv",
-    "git status", "git log", "git diff", "git branch", "git remote", "git show", "git tag",
-    "python --version", "python3 --version", "node --version", "npm --version",
-    "pip list", "pip show", "pip --version", "uv --version", "uv run python -c",
-    "ollama list", "ollama --version",
-    "test ", "test -f", "test -d", "test -e",
-)
-# Keywords that make a command high-risk even if the first word looks safe
-_HIGH_RISK_KEYWORDS = (
-    "rm ", "rmdir", "del ", "format", "shutdown", "reboot",
-    "pip install", "npm install", "yarn add",
-    "git push", "git reset", "git checkout",
-    "chmod", "chown", "mkfs",
-    "curl -X POST", "curl -X PUT", "curl -X DELETE",
-    "wget ",
-    "> ", ">> ",
-    "ssh ", "scp ",
-)
+
+def _load_approval_rules() -> dict:
+    """Load approval rules from settings.approval_rules_path.
+
+    Falls back to _DEFAULT_RULES on any error (file missing, JSON invalid,
+    settings not yet initialized). Logs a warning so misconfigurations are
+    visible without breaking the hook endpoint.
+    """
+    try:
+        from config.settings import settings
+        path_str = settings.approval_rules_path
+    except Exception:
+        path_str = None
+
+    if not path_str:
+        # Settings not loaded yet (e.g. import time during module init) — use default.
+        path_str = "./config/approval_rules.json"
+
+    try:
+        path = Path(path_str)
+        if not path.is_absolute():
+            # Relative to project root (parent of app/).
+            path = Path(__file__).resolve().parent.parent.parent / path_str
+        if not path.exists():
+            logger.info("Approval rules file %s missing, using built-in defaults", path)
+            return _DEFAULT_RULES
+        data = json.loads(path.read_text(encoding="utf-8"))
+        # Schema sanity check
+        for key in ("high_risk_tools", "safe_command_patterns", "high_risk_keywords"):
+            if key not in data:
+                logger.warning("Approval rules file missing key %r, using defaults", key)
+                return _DEFAULT_RULES
+        logger.info("Loaded approval rules from %s", path)
+        return data
+    except Exception as e:
+        logger.warning("Failed to load approval rules from %s: %s, using defaults", path_str, e)
+        return _DEFAULT_RULES
+
+
+_RULES = _load_approval_rules()
+
+# Public aliases (keep names stable so other modules / tests can import these).
+HIGH_RISK_TOOLS = set(_RULES["high_risk_tools"])
+_SAFE_COMMAND_PATTERNS = tuple(_RULES["safe_command_patterns"])
+_HIGH_RISK_KEYWORDS = tuple(_RULES["high_risk_keywords"])
 
 # Debug: track recent hook calls
 _hook_log: list[str] = []

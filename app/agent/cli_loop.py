@@ -261,8 +261,26 @@ class ClaudeCLILoop:
         self._reader_tasks: dict[str, asyncio.Task] = {}
         self._start_locks: dict[str, asyncio.Lock] = {}
         self._last_error: str = ""
+        # Store recent AgentResult history per open_id for /notes command lookup
+        self._last_results: dict[str, AgentResult] = {}
+        self._task_history: dict[str, dict[str, AgentResult]] = {}
 
     # ---- public API ----
+
+    def get_last_result(self, open_id: str) -> AgentResult | None:
+        """Get the most recent task execution result for a user."""
+        return self._last_results.get(open_id)
+
+    def get_task_result(self, open_id: str, task_id: str) -> AgentResult | None:
+        """Get a specific task execution result by task_id for a user."""
+        user_history = self._task_history.get(open_id, {})
+        if task_id in user_history:
+            return user_history[task_id]
+        # Global fallback search across all users if task_id matches
+        for history in self._task_history.values():
+            if task_id in history:
+                return history[task_id]
+        return None
 
     def is_running(self, open_id: str) -> bool:
         """Check if there's a running CLI process that can still accept messages."""
@@ -359,12 +377,17 @@ class ClaudeCLILoop:
             self._response_futures.setdefault(open_id, []).append((future, msg_state))
 
             # Write JSONL user message to stdin
-            payload = json.dumps({
-                "type": "user",
-                "message": {"role": "user", "content": prompt},
-            }) + "\n"
-            writer.write(payload.encode())
-            await writer.drain()
+            try:
+                payload = json.dumps({
+                    "type": "user",
+                    "message": {"role": "user", "content": prompt},
+                }) + "\n"
+                writer.write(payload.encode())
+                await writer.drain()
+            except (ConnectionResetError, BrokenPipeError, OSError) as exc:
+                logger.warning("Stdin writer broken for open_id %s: %s", open_id, exc)
+                self._cleanup(open_id)
+                return self._error_result(prompt, f"进程通信中断 ({type(exc).__name__}): {exc}")
 
         return await future
 
@@ -796,6 +819,14 @@ class ClaudeCLILoop:
             finished_at=datetime.now(),
         )
 
+        # Record result in history for /notes command lookup
+        self._last_results[open_id] = result
+        user_history = self._task_history.setdefault(open_id, {})
+        user_history[task_id] = result
+        if len(user_history) > 50:
+            first_key = next(iter(user_history))
+            user_history.pop(first_key, None)
+
         # Transition progress card → final state (same card_id, no new card).
         if card_id:
             try:
@@ -813,6 +844,7 @@ class ClaudeCLILoop:
                     output_tokens=usage.get("output_tokens", 0),
                     error=error,
                     session_id=result.session_id,
+                    task_id=task_id,
                 )
                 asyncio.create_task(
                     feishu_client.update_card(card_id, final_card),

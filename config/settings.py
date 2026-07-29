@@ -23,12 +23,13 @@ class Settings(BaseSettings):
     tool_approval_timeout: int = 1800     # Tool execution card timeout (30 min)
     tool_approval_warn_seconds: int = 300 # Warn 5 min before tool approval expires
     approval_mode: str = "m"  # h=高风险(全审批) m=中(高风险审批) l=低风险(全自动放行)
+    approval_rules_path: str = "./config/approval_rules.json"
 
     # Access control
     allowed_users: str = ""
 
     # Audit
-    audit_log_path: str = "./audit.log"
+    audit_log_path: str = "./logs/audit.log"
 
     # Context monitoring
     context_warn_percent: int = 80       # warn when context usage exceeds this %

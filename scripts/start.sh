@@ -4,8 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if [ ! -f .env ]; then
-    echo "Error: .env file not found. Copy .env.example to .env and fill in your config."
-    echo "  cp .env.example .env"
+    echo "Error: .env file not found. Copy examples/.env.example to .env and fill in your config."
+    echo "  cp examples/.env.example .env"
     exit 1
 fi
 

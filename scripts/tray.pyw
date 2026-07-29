@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 HEALTH_URL = "http://127.0.0.1:8080/health"
-LOG_PATH = ROOT / "myclaw.log"
+LOG_PATH = ROOT / "logs" / "myclaw.log"
 WM_TRAY = 0x8001
 WM_COMMAND = 0x0111
 WM_DESTROY = 0x0002
@@ -120,6 +120,7 @@ def get_health_detail() -> tuple[bool, str]:
 
 def start_server() -> None:
     global server, job_handle
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     if healthy():
         return
     env = os.environ.copy()
@@ -204,11 +205,10 @@ def window_proc(hwnd, msg, wparam, lparam):
 
 
 def main() -> None:
-    mutex = kernel32.CreateMutexW(None, True, "Global\\MyClawTray")
+    mutex = kernel32.CreateMutexW(None, True, "Global\\MyClawTraySingleInstance")
     if kernel32.GetLastError() == 183:
-        if healthy():
-            return
-        time.sleep(1)
+        message("MyClaw 托盘程序已在后台运行中，无需重复打开。", "提示")
+        return
     start_server()
     callback = WNDPROC(window_proc)
     cls = WNDCLASS()

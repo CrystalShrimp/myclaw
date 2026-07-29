@@ -42,10 +42,10 @@ cd D:\ForRunning\ForDev\myclaw
 uv sync
 
 # 3. 复制环境变量模板
-cp .env.example .env
+cp examples/.env.example .env
 
 # 4. 配置至少一个 profile（API 供应商）—— 详见 §5
-cp config/settings_glm.example.json config/settings_glm.json
+cp examples/settings_glm.example.json config/settings_glm.json
 notepad config/settings_glm.json   # 填入 ANTHROPIC_AUTH_TOKEN
 
 # 5. 【推荐】用 Auto feishu 一键完成飞书配置（自动写 .env 的飞书字段）—— 详见 §6.1
@@ -67,7 +67,7 @@ uv run python -m app.main
 
 ## 4. `.env` 字段详解
 
-模板见 `.env.example`。**必填项**标 ★，修改后**必须重启**才生效（除非另有说明）。
+模板见 `examples/.env.example`。**必填项**标 ★，修改后**必须重启**才生效（除非另有说明）。
 
 ### 4.1 飞书应用凭据（Auto feishu 会自动写入这几项）
 
@@ -124,7 +124,7 @@ uv run python -m app.main
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `AUDIT_LOG_PATH` | `./audit.log` | 审计日志位置（JSON-lines） |
+| `AUDIT_LOG_PATH` | `./logs/audit.log` | 审计日志位置（JSON-lines） |
 | `HOST` | `0.0.0.0` | FastAPI 监听地址 |
 | `PORT` | `8080` | FastAPI 监听端口 |
 
@@ -410,48 +410,24 @@ Auto feishu **可重复运行**，每次会：
 
 ### 7.2 修改 mode 权限的 Bash 白/黑名单
 
-编辑 `app/hooks/router.py` 顶部的两个常量：
+可通过编辑 `config/approval_rules.json` 配置文件调整审批规则，无需修改 Python 源码，重启服务即可生效。
 
-**白名单**（mode m 下自动放行的命令）— `_SAFE_COMMAND_PATTERNS`：
+配置文件包含了三类判定规则：
 
-```python
-_SAFE_COMMAND_PATTERNS = (
-    "ls", "dir", "cat", "head", "tail", "find", "grep", "which", "where",
-    "cd", "pwd", "whoami", "echo", "type", "wc", "sort", "uniq", "diff", "file",
-    "stat", "du", "df", "uname", "hostname", "date", "env", "printenv",
-    "git status", "git log", "git diff", "git branch", "git remote", "git show", "git tag",
-    "python --version", "python3 --version", "node --version", "npm --version",
-    "pip list", "pip show", "pip --version", "uv --version", "uv run python -c",
-    "ollama list", "ollama --version",
-    "test ", "test -f", "test -d", "test -e",
-)
-```
-
-**黑名单**（包含这些子串就送审）— `_HIGH_RISK_KEYWORDS`：
-
-```python
-_HIGH_RISK_KEYWORDS = (
-    "rm ", "rmdir", "del ", "format", "shutdown", "reboot",
-    "pip install", "npm install", "yarn add",
-    "git push", "git reset", "git checkout",
-    "chmod", "chown", "mkfs",
-    "curl -X POST", "curl -X PUT", "curl -X DELETE",
-    "wget ",
-    "> ", ">> ",
-    "ssh ", "scp ",
-)
-```
+- **高风险工具 (`high_risk_tools`)**：如 `Write`, `Edit`, `NotebookEdit`，匹配到直接送审。
+- **安全命令白名单 (`safe_command_patterns`)**：在平衡模式 (mode m) 下自动放行的只读或安全命令前缀（如 `ls`, `git status`, `python --version` 等）。
+- **高风险关键字黑名单 (`high_risk_keywords`)**：命令中包含这些高风险关键字（如 `rm `, `git push`, `npm install` 等）时优先拦截送审。
 
 **常见修改场景**：
 
-| 需求 | 改哪里 |
+| 需求 | 编辑 `config/approval_rules.json` 改哪里 |
 |---|---|
-| 让 `cargo build` 自动放行 | 加到 `_SAFE_COMMAND_PATTERNS` |
-| 让 `make` 强制审批 | 加到 `_HIGH_RISK_KEYWORDS` |
-| 让 `docker run` 强制审批 | 加到 `_HIGH_RISK_KEYWORDS` |
-| 让 `go test` 自动放行 | 加到 `_SAFE_COMMAND_PATTERNS` |
+| 让 `docker ps` 自动放行 | 加到 `"safe_command_patterns"` 列表 |
+| 让 `make` 强制审批 | 加到 `"high_risk_keywords"` 列表 |
+| 让 `docker run` 强制审批 | 加到 `"high_risk_keywords"` 列表 |
+| 让 `go test` 自动放行 | 加到 `"safe_command_patterns"` 列表 |
 
-修改后**需要重启服务**（开发模式 `--dev` 下 uvicorn 会自动热加载）。
+修改后**重启服务即可生效**（开发模式下修改配置文件亦可随时热更新）。
 
 > 命令链 `cmd1 && cmd2` / `cmd1 ; cmd2` / `cmd1 \| cmd2` **只检查第一段**。所以 `safe_cmd && rm -rf /` 会被判低风险——这是已知妥协，生产环境建议 mode l 兜底。
 
@@ -567,8 +543,8 @@ APPROVAL_MODE=m                 # h=全自动 m=平衡 l=严格
 | 5 | 历史继承 | 切到老工作区发消息 | `/status` 显示消息数 > 0（说明 `--continue` 生效） |
 | 6 | mode l 审批 | `/mode l` 后让 claude 写文件 | 看到审批卡片 |
 | 7 | mode h 直通 | `/mode h` 后让 claude 写文件 | 无审批直接执行 |
-| 8 | 运行日志 | `tail -f myclaw.log` | 无 ERROR / Exception |
-| 9 | 审计日志 | `tail -f audit.log` | 能看到 `command_received` 记录 |
+| 8 | 运行日志 | `tail -f logs/myclaw.log` | 无 ERROR / Exception |
+| 9 | 审计日志 | `tail -f logs/audit.log` | 能看到 `command_received` 记录 |
 | 10 | 卡片回调 | 点审批卡片按钮 | 看到 toast "已允许/已拒绝" |
 | 11 | profile 切换 | `/provider <另一个>` | 看到 toast "模型已切换" |
 | 12 | 异常自愈 | 强杀 claude 子进程 | 收到飞书异常退出告警 |
@@ -655,15 +631,14 @@ netstat -ano | findstr :8080    # Windows
 ```
 myclaw/                              # 项目根目录
 ├── .env                             # 环境变量（Auto feishu 会自动写飞书字段）
-├── .env.example                     # 模板
 ├── CLAUDEME.md                      # 本文件（Agent 配置指南）
 ├── config/
 │   ├── settings.py                  # pydantic-settings 配置定义
 │   ├── settings_<name>.json         # API 供应商 profile
 │   ├── settings_<name>.example.json # profile 模板
 │   ├── active_profile               # 当前 active profile 名
-│   ├── claude_settings.json         # MyClaw 自有 claude 配置（代码生成，别手改）
-│   └── shortcuts.json               # /cd 快捷方式映射
+│   ├── approval_rules.json          # 动态审批规则配置（工具白/黑名单）
+│   └── claude_settings.json         # MyClaw 自有 claude 配置（代码生成，别手改）
 ├── app/
 │   ├── main.py                      # FastAPI 入口 + WS 长连接 + /health 端点
 │   ├── profiles.py                  # profile 切换、test_profile 测连通
@@ -678,6 +653,12 @@ myclaw/                              # 项目根目录
 │   ├── audit/logger.py              # JSON-lines 审计日志
 │   ├── models/schemas.py            # 数据模型
 │   └── state/preferences.py         # per-user 的 provider/level/mode 持久化
+├── examples/                        # 用户配置与环境变量模板目录
+│   ├── .env.example                 #   .env 样例模板
+│   └── settings_*.example.json      #   各种 API 供应商配置样例
+├── logs/                            # 运行时日志目录
+│   ├── myclaw.log                   #   运行日志（10MB × 5 轮转）
+│   └── audit.log                    #   审计日志（JSON-lines）
 ├── auto_feishu/                     # ★ 飞书一键自动化工具（Node.js + Playwright）
 │   ├── README.md                    #   自动化说明
 │   ├── setup.cmd                    #   Windows 一键入口
@@ -695,15 +676,14 @@ myclaw/                              # 项目根目录
 │   ├── hooks/pre_tool_use.py        # PreToolUse hook 脚本（claude 子进程调用）
 │   ├── tray.pyw                     # Windows 系统托盘版启动器
 │   ├── restart_service.py           # 重启服务工具
+│   ├── setup_autostart.bat          # Windows 开机自启快捷方式生成脚本
 │   ├── diagnose_deepseek.py         # DeepSeek 诊断工具
 │   └── feishu_bot/                  # ⚠️ 早期自动化废弃产物（仅 MANUAL_SETUP.md 和 openclaw-scopes.json 有用）
 ├── doc/                             # 文档
 ├── flow/                            # 架构图
 ├── .preferences/                    # per-user 运行时偏好（自动生成）
 ├── .sessions/                       # per-user session 路由状态（自动生成）
-├── myclaw.log                       # 运行日志（10MB × 5 轮转）
-├── audit.log                        # 审计日志（JSON-lines）
-├── MyClaw.bat / MyClaw-Debug.bat    # Windows 启动器
+├── MyClaw.bat / MyClaw-Restart.bat  # Windows 启动器
 ├── pyproject.toml                   # Python 项目配置
 └── uv.lock                          # 依赖锁
 ```

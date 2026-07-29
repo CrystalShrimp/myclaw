@@ -8,11 +8,11 @@ echo.
 
 set "STARTUP_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
 set "NEW_LNK=%STARTUP_DIR%\MyClaw.lnk"
-set "MYCLAW_BAT=%~dp0MyClaw.bat"
+set "MYCLAW_BAT=%~dp0..\MyClaw.bat"
 
 if not exist "%MYCLAW_BAT%" (
-    echo [ERROR] MyClaw.bat not found in current directory!
-    echo Please run this script in MyClaw project root.
+    echo [ERROR] MyClaw.bat not found in parent directory!
+    echo Please run this script from MyClaw scripts directory.
     echo.
     pause
     exit /b 1
@@ -29,7 +29,7 @@ set "VBS_SCRIPT=%TEMP%\create_myclaw_shortcut.vbs"
 echo Set WshShell = CreateObject("WScript.Shell") > "%VBS_SCRIPT%"
 echo Set shortcut = WshShell.CreateShortcut("%NEW_LNK%") >> "%VBS_SCRIPT%"
 echo shortcut.TargetPath = "%MYCLAW_BAT%" >> "%VBS_SCRIPT%"
-echo shortcut.WorkingDirectory = "%~dp0" >> "%VBS_SCRIPT%"
+echo shortcut.WorkingDirectory = "%~dp0.." >> "%VBS_SCRIPT%"
 echo shortcut.WindowStyle = 7 >> "%VBS_SCRIPT%"
 echo shortcut.Description = "MyClaw AutoStart Service" >> "%VBS_SCRIPT%"
 echo shortcut.Save >> "%VBS_SCRIPT%"

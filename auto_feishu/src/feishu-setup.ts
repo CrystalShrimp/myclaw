@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { execFileSync, spawn } from "node:child_process";
 import path from "node:path";
 import { stdin as input, stdout as output } from "node:process";
@@ -1420,132 +1420,86 @@ async function listStartedAppCandidates(page: Page): Promise<StartedAppCandidate
 }
 
 async function listStartedAppCandidatesV2(page: Page): Promise<StartedAppCandidate[]> {
-  const normalize = (value: string): string => value.replace(/\s+/g, " ").trim();
-  const acceptedStatuses = ["已启动", "已启用"];
-  const candidates: StartedAppCandidate[] = [];
-  const seen = new Set<string>();
+  const scanPromise = (async () => {
+    const normalize = (value: string): string => value.replace(/\s+/g, " ").trim();
+    const acceptedStatuses = ["已启动", "已启用"];
+    const candidates: StartedAppCandidate[] = [];
+    const seen = new Set<string>();
 
-  const appCards = page.locator(".app-card, [class*='app-card']");
-  const cardCount = Math.min(await appCards.count(), 50);
-  for (let index = 0; index < cardCount; index += 1) {
-    const card = appCards.nth(index);
-    let cardText = "";
+    const appCards = page.locator(".app-card, [class*='app-card']");
+    const cardCount = Math.min(await appCards.count().catch(() => 0), 50);
 
-    try {
-      if (!(await card.isVisible())) {
+    for (let index = 0; index < cardCount; index += 1) {
+      const card = appCards.nth(index);
+      let cardText = "";
+
+      try {
+        if (!(await card.isVisible())) {
+          continue;
+        }
+        cardText = normalize(await card.innerText());
+      } catch {
         continue;
       }
-      cardText = normalize(await card.innerText());
-    } catch {
-      continue;
+
+      if (!cardText || !(await hasExactStartedTag(card))) {
+        continue;
+      }
+
+      const title = await card
+        .locator(".app-card__title, [class*='app-card__title']")
+        .first()
+        .innerText()
+        .then((value) => normalize(value))
+        .catch(() => "");
+      const status = await card
+        .locator(".ud__tag__content, [class*='tag__content']")
+        .first()
+        .innerText()
+        .then((value) => normalize(value))
+        .catch(() => "");
+      if (!acceptedStatuses.includes(status)) {
+        continue;
+      }
+      const candidateName =
+        title ||
+        cardText
+          .split(/\n| {2,}/)
+          .map((part) => normalize(part))
+          .find(
+            (part) =>
+              part !== "已启动" &&
+              !["创建应用", "创建企业自建应用", "企业自建应用", "开发者后台"].includes(part) &&
+              part.length >= 2 &&
+              part.length <= 80
+          ) ||
+        "";
+
+      if (!candidateName) {
+        continue;
+      }
+
+      const key = `${candidateName}__${cardText}`;
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      candidates.push({
+        name: candidateName,
+        status,
+        containerText: cardText
+      });
     }
 
-    if (!cardText || !(await hasExactStartedTag(card))) {
-      continue;
-    }
-
-    const title = await card
-      .locator(".app-card__title, [class*='app-card__title']")
-      .first()
-      .innerText()
-      .then((value) => normalize(value))
-      .catch(() => "");
-    const status = await card
-      .locator(".ud__tag__content, [class*='tag__content']")
-      .first()
-      .innerText()
-      .then((value) => normalize(value))
-      .catch(() => "");
-    if (!acceptedStatuses.includes(status)) {
-      continue;
-    }
-    const candidateName =
-      title ||
-      cardText
-        .split(/\n| {2,}/)
-        .map((part) => normalize(part))
-        .find(
-          (part) =>
-            part !== "已启动" &&
-            !["创建应用", "创建企业自建应用", "企业自建应用", "开发者后台"].includes(part) &&
-            part.length >= 2 &&
-            part.length <= 80
-        ) ||
-      "";
-
-    if (!candidateName) {
-      continue;
-    }
-
-    const key = `${candidateName}__${cardText}`;
-    if (seen.has(key)) {
-      continue;
-    }
-
-    seen.add(key);
-    candidates.push({
-      name: candidateName,
-      status,
-      containerText: cardText
-    });
-  }
-
-  if (candidates.length > 0) {
     return candidates.slice(0, 10);
-  }
+  })();
 
-  const blocks = page.locator("a, button, [role='link'], [role='button'], tr, [role='row'], li, .table-row, .list-item, .card, .item, div");
-  const blockCount = Math.min(await blocks.count(), 200);
+  const timeoutPromise = new Promise<StartedAppCandidate[]>((resolve) =>
+    setTimeout(() => resolve([]), 1500)
+  );
 
-  for (let index = 0; index < blockCount; index += 1) {
-    const block = blocks.nth(index);
-    let rowText = "";
-
-    try {
-      if (!(await block.isVisible())) {
-        continue;
-      }
-      rowText = normalize(await block.innerText());
-    } catch {
-      continue;
-    }
-
-    if (!rowText || rowText.length > 300 || !acceptedStatuses.some((status) => rowText.includes(status))) {
-      continue;
-    }
-
-    const parts = rowText
-      .split(/\n| {2,}/)
-      .map((part) => normalize(part))
-      .filter(Boolean);
-    const candidateName =
-      parts.find(
-        (part) =>
-          part !== "已启动" &&
-          !["创建应用", "创建企业自建应用", "企业自建应用", "开发者后台"].includes(part) &&
-          part.length >= 2 &&
-          part.length <= 80
-      ) ||
-      "";
-
-    if (!candidateName) {
-      continue;
-    }
-
-    const key = `${candidateName}__${rowText}`;
-    if (seen.has(key)) {
-      continue;
-    }
-
-    seen.add(key);
-    candidates.push({
-      name: candidateName,
-      status: acceptedStatuses.find((status) => rowText.includes(status)) ?? "unknown",
-      containerText: rowText
-    });
-  }
-
-  return candidates.slice(0, 10);
+  return Promise.race([scanPromise, timeoutPromise]);
 }
 
 async function chooseStartedApp(ctx: StepContext): Promise<StartedAppCandidate | null> {
@@ -1575,6 +1529,7 @@ async function chooseStartedApp(ctx: StepContext): Promise<StartedAppCandidate |
     return candidates[0];
   }
 
+  ctx.logger.info(`检测到页面上有 ${candidates.length} 个已启动的飞书实例，请在下方确认是否复用：`);
   const shouldReuse = await promptYesNo(ctx.prompt, "是否复用一个已启动的飞书实例？", true);
   if (!shouldReuse) {
     return null;
@@ -1661,26 +1616,37 @@ async function openAppByName(ctx: StepContext, appName: string, preferStarted = 
 
 async function createOrOpenApp(ctx: StepContext): Promise<void> {
   if (ctx.result.appId) {
-    const appUrl = "https://open.feishu.cn/app/" + ctx.result.appId + "/baseinfo";
-    ctx.logger.info("检测到历史应用，尝试续跑：" + ctx.result.appId);
-    await ctx.page.goto(appUrl, { waitUntil: "domcontentloaded" });
-
-    const inaccessible = await waitForAnyText(
-      ctx.page,
-      ["无权访问", "应用不存在", "页面不存在", "抱歉，您无权访问此页面"],
-      Math.min(ctx.config.timeoutMs, 4000)
+    const reuseHistorical = await promptYesNo(
+      ctx.prompt,
+      `检测到历史应用记录 (${ctx.result.appId})，是否确认复用该历史应用？`,
+      true
     );
-    const backendSignal = inaccessible
-      ? null
-      : await waitForAnyText(ctx.page, APP_BACKEND_SIGNALS, ctx.config.timeoutMs);
 
-    if (backendSignal) {
-      return;
+    if (reuseHistorical) {
+      const appUrl = "https://open.feishu.cn/app/" + ctx.result.appId + "/baseinfo";
+      ctx.logger.info("确认复用历史应用续跑：" + ctx.result.appId);
+      await ctx.page.goto(appUrl, { waitUntil: "domcontentloaded" });
+
+      const inaccessible = await waitForAnyText(
+        ctx.page,
+        ["无权访问", "应用不存在", "页面不存在", "抱歉，您无权访问此页面"],
+        Math.min(ctx.config.timeoutMs, 4000)
+      );
+      const backendSignal = inaccessible
+        ? null
+        : await waitForAnyText(ctx.page, APP_BACKEND_SIGNALS, ctx.config.timeoutMs);
+
+      if (backendSignal) {
+        return;
+      }
+
+      ctx.logger.warn(
+        "历史 App ID 对当前登录账号不可用，已放弃该状态并返回应用列表：" + ctx.result.appId
+      );
+    } else {
+      ctx.logger.info(`用户放弃复用历史应用 ${ctx.result.appId}，重置记录并返回应用列表...`);
     }
 
-    ctx.logger.warn(
-      "历史 App ID 对当前登录账号不可用，已放弃该状态并返回应用列表：" + ctx.result.appId
-    );
     ctx.result.appId = null;
     ctx.result.maskedSecret = null;
     ctx.result.existingAppReused = false;
@@ -1692,10 +1658,13 @@ async function createOrOpenApp(ctx: StepContext): Promise<void> {
     ctx.result.published = false;
     await persistResult(ctx.config, ctx.result);
   }
+  ctx.logger.info("正在打开飞书开放平台应用列表页...");
   await openAppWorkbench(ctx);
 
+  ctx.logger.info("正在切换到“企业自建应用”页签...");
   await clickSelfBuiltAppsTab(ctx).catch(() => false);
 
+  ctx.logger.info("正在检测是否有已启动状态的应用实例...");
   const startedApp = ctx.config.reuseStartedApp ? await chooseStartedApp(ctx) : null;
   if (startedApp) {
     const opened = await openAppByName(ctx, startedApp.name, true, startedApp.status);
@@ -1725,19 +1694,34 @@ async function createOrOpenApp(ctx: StepContext): Promise<void> {
     throw new Error(`检测到 ${sameNameCardCount} 个同名应用“${ctx.config.appName}”，但没有锁定到“已启动”标签，已停止自动选择。`);
   }
 
+  ctx.logger.info(`正在扫描“${ctx.config.appName}”已有应用卡片...`);
   const existingApp = await firstVisibleLocator([ctx.page.getByText(toRegex(ctx.config.appName))], 3000);
-  if (existingApp && ctx.config.reuseStartedApp) {
-    await existingApp.click({ timeout: ctx.config.timeoutMs });
-    ctx.result.existingAppReused = true;
-    ctx.result.reusedAppName = ctx.config.appName;
-    const appSignal = await waitForAnyText(ctx.page, APP_BACKEND_SIGNALS, ctx.config.timeoutMs);
-    if (!appSignal) {
-      await manualTakeover(ctx, "进入已有应用后台", [
-        `请在页面中手动打开应用“${ctx.config.appName}”。`,
-        "确认页面左侧出现应用后台菜单后，再回到终端。"
-      ]);
+  if (existingApp) {
+    ctx.logger.info(`检测到同名已有应用“${ctx.config.appName}”，请在下方确认是否复用：`);
+    const shouldReuse = await promptYesNo(
+      ctx.prompt,
+      `检测到账号下已存在应用“${ctx.config.appName}”，是否复用该应用？`,
+      true
+    );
+
+    if (shouldReuse) {
+      ctx.logger.info(`确认复用已有应用：${ctx.config.appName}`);
+      await existingApp.click({ timeout: ctx.config.timeoutMs });
+      ctx.result.existingAppReused = true;
+      ctx.result.reusedAppName = ctx.config.appName;
+      const appSignal = await waitForAnyText(ctx.page, APP_BACKEND_SIGNALS, ctx.config.timeoutMs);
+      if (!appSignal) {
+        await manualTakeover(ctx, "进入已有应用后台", [
+          `请在页面中手动打开应用“${ctx.config.appName}”。`,
+          "确认页面左侧出现应用后台菜单后，再回到终端。"
+        ]);
+      }
+      return;
     }
-    return;
+
+    ctx.logger.info(`用户选择不复用已有应用“${ctx.config.appName}”，将继续进入创建新应用流程...`);
+  } else {
+    ctx.logger.info(`未在当前账号下扫描到已有应用“${ctx.config.appName}”，即将进入创建新应用表单...`);
   }
 
   const createClicked = (await openCreateSelfBuiltAppEntry(ctx)) || (await clickByCandidates(
@@ -1983,10 +1967,9 @@ async function fetchCredentials(ctx: StepContext): Promise<void> {
 
   ctx.result.appId = finalAppId;
   ctx.runtimeAppSecret = secret;
-  await writeFeishuCredentials(ctx.config.envPath, finalAppId, secret);
   ctx.result.maskedSecret = maskSecret(secret);
-  ctx.logger.info(`App ID 已读取：${finalAppId}`);
-  ctx.logger.info(`App Secret 已读取：${ctx.result.maskedSecret}`);
+  ctx.logger.info(`App ID 已抓取：${finalAppId}`);
+  ctx.logger.info(`App Secret 已抓取：${ctx.result.maskedSecret} (将在发布成功后统一同步至 .env)`);
   await persistResult(ctx.config, ctx.result);
 }
 
@@ -2300,11 +2283,13 @@ async function enableBotCapability(ctx: StepContext): Promise<void> {
 async function configureEventSubscription(ctx: StepContext): Promise<void> {
   await waitForLocalClawOnline(ctx);
 
+  ctx.logger.info("正在点击页面左侧“事件与回调 / 事件订阅”菜单...");
   const clicked = await clickByCandidates(ctx.page, ["事件与回调", "事件订阅"], ctx.config.timeoutMs, ctx.logger);
   if (!clicked) {
     await manualTakeover(ctx, "进入事件订阅页面", ["请检查是否有权限访问事件订阅页面。"]);
   }
 
+  ctx.logger.info("正在设置订阅方式为 WebSocket 长连接模式...");
   const subscriptionMode = await clickByCandidates(
     ctx.page,
     ["订阅方式"],
@@ -2331,6 +2316,7 @@ async function configureEventSubscription(ctx: StepContext): Promise<void> {
     await manualTakeover(ctx, "选择 WebSocket 长连接模式", ["请检查页面是否允许启用 WebSocket 长连接。"]);
   }
 
+  ctx.logger.info("正在点击“验证”并保存 WebSocket 连通状态...");
   const modeDialog = (await findVisibleModal(ctx.page, Math.min(ctx.config.timeoutMs, 5000))) ?? ctx.page;
   const verifyMode = await clickByCandidates(modeDialog, ["验证"], ctx.config.timeoutMs, ctx.logger);
   if (verifyMode) {
@@ -2341,6 +2327,8 @@ async function configureEventSubscription(ctx: StepContext): Promise<void> {
     throw new Error("WebSocket 订阅方式验证后未找到保存按钮。");
   }
   await ctx.page.waitForTimeout(1500);
+
+  ctx.logger.info("正在检查并添加需要的消息事件 (im.message.receive_v1 等)...");
 
   const missingEvents: string[] = [];
   for (const eventName of ctx.config.eventNames.filter((name) => !name.startsWith("card."))) {
@@ -2508,6 +2496,16 @@ async function publishApp(ctx: StepContext): Promise<void> {
   if (!saveVersion) throw new Error("创建版本表单中未找到保存按钮。");
   await saveVersion.locator.click({ timeout: ctx.config.timeoutMs });
 
+  const shouldPublish = isNonInteractivePrompt()
+    ? true
+    : await promptYesNo(ctx.prompt, "版本配置已完成，是否确认提交发布该应用版本？", true);
+
+  if (!shouldPublish) {
+    ctx.logger.info("用户暂停提交发布应用。后续您可在飞书开放平台后台手动点击发布。");
+    ctx.result.published = false;
+    return;
+  }
+
   const confirmPublish = await waitForEnabledAction(ctx.page, ["确认发布"], ctx.config.timeoutMs);
   if (!confirmPublish) throw new Error("保存版本后未找到确认发布按钮。");
   await confirmPublish.locator.click({ timeout: ctx.config.timeoutMs });
@@ -2537,6 +2535,28 @@ async function main(): Promise<void> {
 
     logger.info("项目文件结构：");
     logger.info(". / myclaw_Installer.bat / myclaw_Installer.ps1 / config.json / feishu-permissions.json / package.json / README.md / tsconfig.json / src/feishu-setup.ts");
+
+    const hasStorageState = await pathExists(config.storageStatePath);
+    const hasUserData = await pathExists(config.userDataDirPath);
+
+    if ((hasStorageState || hasUserData) && !isNonInteractivePrompt()) {
+      const reuseUserData = await promptYesNo(
+        prompt,
+        "检测到本地已存在飞书登录用户数据，是否沿用当前用户数据？",
+        true
+      );
+      if (!reuseUserData) {
+        logger.info("用户选择不沿用，正在清理历史登录数据与 Session 缓存...");
+        if (hasStorageState) {
+          await rm(config.storageStatePath, { force: true }).catch(() => undefined);
+        }
+        if (hasUserData) {
+          await rm(config.userDataDirPath, { recursive: true, force: true }).catch(() => undefined);
+        }
+      } else {
+        logger.info("确认沿用当前飞书登录用户数据。");
+      }
+    }
 
     await ensureDir(config.userDataDirPath);
     const storageState = (await pathExists(config.storageStatePath)) ? config.storageStatePath : undefined;
@@ -2652,6 +2672,28 @@ async function mainV2(): Promise<void> {
     logger.info("项目文件：");
     logger.info(". / myclaw_Installer.bat / myclaw_Installer.ps1 / config.json / feishu-permissions.json / package.json / README.md / tsconfig.json / src/feishu-setup.ts");
 
+    const hasStorageState = await pathExists(config.storageStatePath);
+    const hasUserData = await pathExists(config.userDataDirPath);
+
+    if (hasStorageState || hasUserData) {
+      const reuseUserData = await promptYesNo(
+        prompt,
+        "检测到本地已存在飞书登录用户数据，是否沿用当前用户数据？",
+        true
+      );
+      if (!reuseUserData) {
+        logger.info("用户选择不沿用，正在清理历史登录数据与 Session 缓存...");
+        if (hasStorageState) {
+          await rm(config.storageStatePath, { force: true }).catch(() => undefined);
+        }
+        if (hasUserData) {
+          await rm(config.userDataDirPath, { recursive: true, force: true }).catch(() => undefined);
+        }
+      } else {
+        logger.info("确认沿用当前飞书登录用户数据。");
+      }
+    }
+
     await ensureDir(config.userDataDirPath);
     const storageState = (await pathExists(config.storageStatePath)) ? config.storageStatePath : undefined;
     context = await chromium.launchPersistentContext(config.userDataDirPath, {
@@ -2683,7 +2725,7 @@ async function mainV2(): Promise<void> {
       await createOrOpenApp(ctx);
     });
 
-    await executeStep(ctx, "同步 App ID 和 App Secret 到根目录 .env", async () => {
+    await executeStep(ctx, "读取飞书 App ID 和 App Secret 凭据", async () => {
       const existingCredentials = await readFeishuCredentials(config.envPath);
       if (
         existingCredentials
@@ -2693,7 +2735,7 @@ async function mainV2(): Promise<void> {
         ctx.result.appId = existingCredentials.appId;
         ctx.runtimeAppSecret = existingCredentials.appSecret;
         ctx.result.maskedSecret = maskSecret(existingCredentials.appSecret);
-        logger.info("已复用根目录 .env 中的飞书凭据。");
+        logger.info("已读取根目录 .env 中的现有飞书凭据。");
       } else {
         await fetchCredentials(ctx);
       }
@@ -2730,11 +2772,21 @@ async function mainV2(): Promise<void> {
     } else if (ctx.result.published) {
       logger.info("续跑：飞书应用版本已发布，跳过。");
     }
+
+    if (ctx.result.published && ctx.result.appId && ctx.runtimeAppSecret) {
+      await executeStep(ctx, "同步 App ID 和 App Secret 到根目录 .env", async () => {
+        await writeFeishuCredentials(config.envPath, ctx.result.appId!, ctx.runtimeAppSecret!);
+        logger.info("已成功同步验证发布无误的飞书凭据到根目录 .env。");
+      });
+    } else {
+      logger.info("提示：应用未提交发布，已跳过根目录 .env 的凭据写入，保持原有配置不被覆盖。");
+    }
+
     ctx.result.status = "completed";
     await persistResult(config, ctx.result);
     logger.info(`结果文件已写入：${config.resultPath}`);
     logger.info(`App Secret 脱敏预览：${ctx.result.maskedSecret ?? "未抓取"}`);
-    logger.info("交付完成：.env 已写入飞书凭据，结果 JSON 未保存 Secret，可在飞书测试机器人。");
+    logger.info("交付完成：结果 JSON 未保存 Secret，可在飞书测试机器人。");
   } catch (error) {
     if (error instanceof AutomationStepError) {
       output.write(`\n步骤失败：${error.step}\n`);

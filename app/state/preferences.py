@@ -58,5 +58,49 @@ class PreferencesManager:
         self.save(open_id, preferences)
         return preferences
 
+    def _workspace_config_path(self, workspace: str) -> Path | None:
+        if not workspace:
+            return None
+        try:
+            ws_dir = Path(workspace).resolve()
+            if not ws_dir.exists() or not ws_dir.is_dir():
+                return None
+            claude_dir = ws_dir / ".claude"
+            claude_dir.mkdir(parents=True, exist_ok=True)
+            return claude_dir / "myclaw_config.json"
+        except Exception:
+            return None
+
+    def load_workspace_config(self, workspace: str) -> UserPreferences | None:
+        """Load workspace-level myclaw_config.json if it exists and is complete."""
+        config_path = self._workspace_config_path(workspace)
+        if not config_path or not config_path.exists():
+            return None
+        try:
+            data = json.loads(config_path.read_text("utf-8"))
+            pref = UserPreferences(
+                model=str(data.get("model", "")),
+                level=str(data.get("level", "")),
+                mode=str(data.get("mode", "")),
+            )
+            return pref if pref.complete else None
+        except Exception as exc:
+            logger.warning("Failed to load workspace config from %s: %s", workspace, exc)
+            return None
+
+    def save_workspace_config(self, workspace: str, preferences: UserPreferences) -> None:
+        """Save complete preferences to workspace/.claude/myclaw_config.json."""
+        if not preferences.complete:
+            return
+        config_path = self._workspace_config_path(workspace)
+        if not config_path:
+            return
+        try:
+            payload = json.dumps(asdict(preferences), indent=2, ensure_ascii=False)
+            config_path.write_text(payload, "utf-8")
+            logger.info("Saved workspace config to %s", config_path)
+        except Exception as exc:
+            logger.warning("Failed to save workspace config to %s: %s", workspace, exc)
+
 
 preferences_manager = PreferencesManager()

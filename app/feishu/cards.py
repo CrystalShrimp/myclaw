@@ -345,6 +345,73 @@ def build_reuse_last_card(
     }
 
 
+def build_workspace_config_reuse_card(
+    approval_id: str,
+    workspace: str,
+    profile_label: str,
+    level: str,
+    mode: str,
+    action_type: str = "switch",
+) -> dict:
+    """当在工作区检测到 .claude/myclaw_config.json 配置文件时弹出的沿用确认卡片。"""
+    mode_desc = {
+        "h": "🛡️ 严格模式 (高风险全审批)",
+        "m": "⚖️ 平衡模式 (写操作审批)",
+        "l": "⚡ 全自动模式 (低风险放行)",
+    }.get(mode, mode)
+
+    title = "检测到工作区已有配置 — 确认沿用？" if action_type == "switch" else "新会话重置 — 沿用工作区已有配置？"
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": title},
+            "template": "turquoise",
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        f"📁 **项目工作区：** `{workspace}`\n\n"
+                        "⚙️ **发现历史配置文件 (.claude/myclaw_config.json)：**\n"
+                        f"• 供应商 (Provider)：`{profile_label}`\n"
+                        f"• 规格 (Model Level)：`{level}`\n"
+                        f"• 模式 (Mode)：`{mode_desc}`"
+                    ),
+                },
+            },
+            {"tag": "hr"},
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "✅ 确认沿用"},
+                        "type": "primary",
+                        "value": {
+                            "approval_id": approval_id,
+                            "act": "reuse_yes",
+                            "type": "workspace_config_reuse",
+                        },
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🔄 重新设置"},
+                        "type": "default",
+                        "value": {
+                            "approval_id": approval_id,
+                            "act": "reuse_no",
+                            "type": "workspace_config_reuse",
+                        },
+                    },
+                ],
+            },
+        ],
+    }
+
+
 # ===== Progress Card (single persistent card per task) =====
 
 
@@ -392,6 +459,7 @@ def build_progress_card(
     last_text: str = "",
     last_warning: str = "",
     session_id: str = "",
+    task_id: str = "",
     # Final-state-only fields
     result_text: str = "",
     input_tokens: int = 0,
@@ -456,6 +524,8 @@ def build_progress_card(
             stats_lines.append(f"**Tokens:** ↑{input_tokens:,} ↓{output_tokens:,}")
         if session_id:
             stats_lines.append(f"**Session:** `{session_id}`")
+        if task_id:
+            stats_lines.append(f"**Task ID:** `{task_id}`")
         if warnings > 0:
             stats_lines.append(f"**警告:** {warnings}")
         elements.append({
@@ -664,16 +734,34 @@ def build_cd_confirm_card(
     claude_md: str,
     warning_running: bool = False,
 ) -> dict:
-    """构建 cd 确认切换卡片，展示目标项目详情、关联状态以及可能的中断警告。"""
-    type_label = "🆕 新建目录" if is_new else "📁 已有目录"
-    
+    """构建 cd 确认切换/新建审批卡片，展示目标项目详情、物理创建权限请求以及可能的中断警告。"""
+    if is_new:
+        title = "审批请求：新建工作区目录"
+        template = "orange"
+        type_label = "🆕 待新建物理目录"
+        confirm_btn_text = "✅ 允许创建并切换"
+        cancel_btn_text = "❌ 拒绝 / 返回"
+        extra_note = (
+            "\n\n📂 **新建审批说明：**\n"
+            f"目标路径 `{target_path}` 在本地磁盘上尚不存在。\n"
+            "点击“允许创建”后，系统将在父目录下物理创建文件夹并绑定为当前工作区。"
+        )
+    else:
+        title = "确认切换工作区"
+        template = "orange" if warning_running else "blue"
+        type_label = "📁 已有目录"
+        confirm_btn_text = "确认切换"
+        cancel_btn_text = "返回选择"
+        extra_note = ""
+
     details = (
-        f"📍 **目标路径：** {target_path}\n"
+        f"📍 **目标路径：** `{target_path}`\n"
         f"🏷️ **属性：** {type_label}\n"
         f"🌿 **Git 分支：** {git_branch}\n"
         f"📝 **CLAUDE.md：** {claude_md}"
+        f"{extra_note}"
     )
-    
+
     elements = [
         {
             "tag": "div",
@@ -683,7 +771,7 @@ def build_cd_confirm_card(
             }
         }
     ]
-    
+
     if warning_running:
         elements.extend([
             {"tag": "hr"},
@@ -695,7 +783,7 @@ def build_cd_confirm_card(
                 }
             }
         ])
-        
+
     elements.extend([
         {"tag": "hr"},
         {
@@ -705,7 +793,7 @@ def build_cd_confirm_card(
                     "tag": "button",
                     "text": {
                         "tag": "plain_text",
-                        "content": "确认切换"
+                        "content": confirm_btn_text
                     },
                     "type": "primary",
                     "value": {
@@ -718,7 +806,7 @@ def build_cd_confirm_card(
                     "tag": "button",
                     "text": {
                         "tag": "plain_text",
-                        "content": "返回选择"
+                        "content": cancel_btn_text
                     },
                     "type": "default",
                     "value": {
@@ -729,12 +817,12 @@ def build_cd_confirm_card(
             ]
         }
     ])
-    
+
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": "确认切换工作区"},
-            "template": "orange" if warning_running else "blue",
+            "title": {"tag": "plain_text", "content": title},
+            "template": template,
         },
         "elements": elements
     }
@@ -828,11 +916,11 @@ def build_help_card() -> dict:
         "**⚙️ 厂家与模型设置**\n"
         "- `/provider [profile]` : 切换模型供应商/厂家 (如 zhipu, deepseek, anthropic)\n"
         "- `/model [haiku|sonnet|opus]` : 切换模型规格/等级 (同 `/level`)\n"
-        "- `/mode [h|m|l]` : 切换审批模式 (`h`高容忍 / `m`中风险审批 / `l`低容忍全审批)\n\n"
+        "- `/mode [h|m|l]` : 切换审批模式 (`h` 严格全审批 / `m` 只读放行写入审批 / `l` 全自动放行)\n\n"
         "**📁 工作区与文件管理**\n"
         "- `/pwd` : 查看当前关联的项目工作区绝对路径\n"
         "- `/cd [path]` : 切换或新建工作区 (不带路径则弹出交互选择卡片)\n"
-        "- `/show` : 选择并直接将工作区下的文件发送到飞书\n\n"
+        "- `/file` : 选择并直接将工作区下的文件发送到飞书\n\n"
         "**💬 会话与控制**\n"
         "- `/status` : 查看当前会话详情与上下文用量\n"
         "- `/new` : 重置并开启全新会话 (保留当前工作区)\n"
@@ -842,9 +930,10 @@ def build_help_card() -> dict:
         "- `/compact` : 压缩当前会话上下文\n"
         "- `/clean` : 清理旧会话数据\n\n"
         "**🛠️ 实用工具**\n"
+        "- `/notes` : 追加写入工作区 `notes.md`（`/notes last` / `/notes <task_id>` / `/notes <内容>`）\n"
         "- `/mem` : 显示当前工作区 CLAUDE.md 内容；`/mem <内容>` 追加；`/mem clear` 清空\n"
         "- `/sh <command>` : 在当前工作区执行一条终端命令 (30秒超时)\n"
-        "- `/help` (或 `帮助`) : 显示本帮助手册"
+        "- `/help` : 显示本帮助手册"
     )
     return {
         "config": {"wide_screen_mode": True},
@@ -908,5 +997,8 @@ def build_mode_selection_card(approval_id: str = "", active_mode: str = "") -> d
         },
         "elements": elements
     }
+
+
+
 
 

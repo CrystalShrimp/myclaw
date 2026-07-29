@@ -15,20 +15,49 @@ from app.feishu import events
 from app.hooks.router import router as hooks_router
 from logging.handlers import RotatingFileHandler
 
+Path("logs").mkdir(exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     handlers=[
         logging.StreamHandler(),
         RotatingFileHandler(
-            "myclaw.log",
+            "logs/myclaw.log",
             maxBytes=10 * 1024 * 1024,
             backupCount=5,
             encoding="utf-8",
         ),
     ],
 )
-logger = logging.getLogger("myclaw")
+import socket
+import sys
+
+logger = logging.getLogger("myclaw.main")
+
+_instance_lock_socket: socket.socket | None = None
+
+def ensure_single_instance(lock_port: int = 48921) -> None:
+    global _instance_lock_socket
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", lock_port))
+        sock.listen(1)
+        _instance_lock_socket = sock
+    except OSError:
+        logger.warning(
+            "⚠️ [SingleInstance] MyClaw 已在后台运行中 (端口 %d 被占用)，无法重复启动。",
+            lock_port,
+        )
+        sys.exit(0)
+
+# Only acquire the single-instance lock when run as the entrypoint
+# (`python -m app.main`). When uvicorn re-imports this module via the
+# string "app.main:app" path, top-level code re-executes — without this
+# guard, ensure_single_instance() would run twice in the same process,
+# the second bind would fail, and sys.exit(0) would silently kill the
+# uvicorn worker before it could bind port 8080.
+if __name__ == "__main__":
+    ensure_single_instance()
 
 # Build event dispatcher
 event_handler = (
@@ -120,7 +149,7 @@ if __name__ == "__main__":
             port=settings.port,
             reload=True,
             reload_includes=["*.py"],
-            reload_excludes=["audit.log", ".env", "*.log"],
+            reload_excludes=["logs/*", "logs/audit.log", "logs/myclaw.log", ".env", "*.log"],
         )
     else:
         uvicorn.run(

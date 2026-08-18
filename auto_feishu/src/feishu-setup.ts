@@ -1616,11 +1616,13 @@ async function openAppByName(ctx: StepContext, appName: string, preferStarted = 
 
 async function createOrOpenApp(ctx: StepContext): Promise<void> {
   if (ctx.result.appId) {
-    const reuseHistorical = await promptYesNo(
-      ctx.prompt,
-      `检测到历史应用记录 (${ctx.result.appId})，是否确认复用该历史应用？`,
-      true
-    );
+    const reuseHistorical = isNonInteractivePrompt()
+      ? true
+      : await promptYesNo(
+        ctx.prompt,
+        `检测到历史应用记录 (${ctx.result.appId})，是否确认复用该历史应用？`,
+        true
+      );
 
     if (reuseHistorical) {
       const appUrl = "https://open.feishu.cn/app/" + ctx.result.appId + "/baseinfo";
@@ -1698,11 +1700,13 @@ async function createOrOpenApp(ctx: StepContext): Promise<void> {
   const existingApp = await firstVisibleLocator([ctx.page.getByText(toRegex(ctx.config.appName))], 3000);
   if (existingApp) {
     ctx.logger.info(`检测到同名已有应用“${ctx.config.appName}”，请在下方确认是否复用：`);
-    const shouldReuse = await promptYesNo(
-      ctx.prompt,
-      `检测到账号下已存在应用“${ctx.config.appName}”，是否复用该应用？`,
-      true
-    );
+    const shouldReuse = isNonInteractivePrompt()
+      ? true
+      : await promptYesNo(
+        ctx.prompt,
+        `检测到账号下已存在应用“${ctx.config.appName}”，是否复用该应用？`,
+        true
+      );
 
     if (shouldReuse) {
       ctx.logger.info(`确认复用已有应用：${ctx.config.appName}`);
@@ -2435,22 +2439,41 @@ async function publishApp(ctx: StepContext): Promise<void> {
     ]);
   }
 
-  const alreadyPublished = await waitForAnyText(ctx.page, ["已发布", "线上版本", "审核中"], 2000);
-  if (alreadyPublished) {
-    ctx.logger.info("检测到现有发布状态：" + alreadyPublished);
+  // 发版必要性判断：旧版本"已发布"字样不代表新配置已生效。
+  // 真正的判据是"创建版本"按钮状态：可点=存在未发布变更；禁用且无待申请版本=已全部发布。
+  const hasPendingVersion = await waitForAnyText(ctx.page, ["待申请"], 2000);
+  const createBtnRegex = /创建版本|新建版本|发布版本|创建并发布/;
+  const createBtnCount = await ctx.page.getByRole("button", { name: createBtnRegex }).count().catch(() => 0);
+  let createDisabled = false;
+  if (createBtnCount > 0) {
+    const createBtn = ctx.page.getByRole("button", { name: createBtnRegex }).first();
+    createDisabled =
+      (await createBtn.getAttribute("disabled").catch(() => null)) !== null ||
+      await createBtn.isDisabled().catch(() => false);
+  }
+  if (createDisabled && !hasPendingVersion) {
+    ctx.logger.info("“创建版本”按钮禁用且无待申请版本：当前配置已全部发布，跳过发版。");
     ctx.result.published = true;
     return;
   }
 
-  const createVersion = await clickByCandidates(
-    ctx.page,
-    ["创建版本", "新建版本", "发布版本", "创建并发布"],
-    ctx.config.timeoutMs,
-    ctx.logger
-  );
-  if (!createVersion) {
+  // 已存在"待申请"版本时，"创建版本"按钮会被禁用，发布表单在"查看版本详情"里。
+  let enteredForm: string | null = null;
+  if (hasPendingVersion) {
+    ctx.logger.info("检测到待申请版本，优先通过“查看版本详情”进入发布表单。");
+    enteredForm = await clickByCandidates(ctx.page, ["查看版本详情"], ctx.config.timeoutMs, ctx.logger);
+  }
+  if (!enteredForm) {
+    enteredForm = await clickByCandidates(
+      ctx.page,
+      ["创建版本", "新建版本", "发布版本", "创建并发布"],
+      ctx.config.timeoutMs,
+      ctx.logger
+    );
+  }
+  if (!enteredForm) {
     await manualTakeover(ctx, "创建版本", [
-      "请手动点击“创建版本”或类似按钮。",
+      "请手动点击“创建版本”或“查看版本详情”。",
       "版本表单出现后再继续。"
     ]);
   }
@@ -2492,9 +2515,14 @@ async function publishApp(ctx: StepContext): Promise<void> {
   }
   ctx.logger.info("应用可用范围已设置为全员：" + finalAvailability);
 
-  const saveVersion = await waitForEnabledAction(ctx.page, ["保存"], ctx.config.timeoutMs);
-  if (!saveVersion) throw new Error("创建版本表单中未找到保存按钮。");
-  await saveVersion.locator.click({ timeout: ctx.config.timeoutMs });
+  // "保存"只存在于"创建新版本"表单；待申请版本的详情页直接提供"确认发布"。
+  const saveVersion = await waitForEnabledAction(ctx.page, ["保存"], Math.min(ctx.config.timeoutMs, 8000));
+  if (saveVersion) {
+    await saveVersion.locator.click({ timeout: ctx.config.timeoutMs });
+    ctx.logger.info("已点击“保存”。");
+  } else {
+    ctx.logger.info("未找到“保存”按钮（待申请版本详情页），直接进入“确认发布”。");
+  }
 
   const shouldPublish = isNonInteractivePrompt()
     ? true
@@ -2676,11 +2704,13 @@ async function mainV2(): Promise<void> {
     const hasUserData = await pathExists(config.userDataDirPath);
 
     if (hasStorageState || hasUserData) {
-      const reuseUserData = await promptYesNo(
-        prompt,
-        "检测到本地已存在飞书登录用户数据，是否沿用当前用户数据？",
-        true
-      );
+      const reuseUserData = isNonInteractivePrompt()
+        ? true
+        : await promptYesNo(
+          prompt,
+          "检测到本地已存在飞书登录用户数据，是否沿用当前用户数据？",
+          true
+        );
       if (!reuseUserData) {
         logger.info("用户选择不沿用，正在清理历史登录数据与 Session 缓存...");
         if (hasStorageState) {

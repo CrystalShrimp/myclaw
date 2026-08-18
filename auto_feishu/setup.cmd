@@ -11,13 +11,18 @@ if /I "%https_proxy%"=="http://127.0.0.1:6984" set https_proxy=
 where node >nul 2>&1
 if errorlevel 1 (
   echo [ERROR] Node.js 20 or newer is required.
+  pause
   exit /b 1
 )
 
 if not exist node_modules\.bin\tsx.cmd (
   echo [INFO] Installing locked Node dependencies...
   call npm ci --ignore-scripts
-  if errorlevel 1 exit /b 1
+  if errorlevel 1 (
+    echo [ERROR] npm ci failed.
+    pause
+    exit /b 1
+  )
 )
 
 REM === Chromium pre-check + friendly error ===
@@ -41,4 +46,14 @@ if errorlevel 1 (
 
 echo [INFO] Starting Feishu one-click setup...
 call npm run feishu:setup
-exit /b %errorlevel%
+if errorlevel 1 (
+  echo.
+  echo [ERROR] Feishu setup failed. Messages and artifacts above.
+  echo Re-run setup.cmd to resume from the last completed step.
+  pause
+  exit /b 1
+)
+echo.
+echo [OK] Feishu setup completed.
+pause
+exit /b 0

@@ -20,9 +20,24 @@ if not exist node_modules\.bin\tsx.cmd (
   if errorlevel 1 exit /b 1
 )
 
-echo [INFO] Preparing Playwright Chromium...
-call npx playwright install chromium
-if errorlevel 1 exit /b 1
+REM === Chromium pre-check + friendly error ===
+echo [INFO] Checking Playwright Chromium...
+call npx playwright install --dry-run chromium >nul 2>&1
+if errorlevel 1 (
+  echo [INFO] Chromium not installed, downloading...
+  call npx playwright install chromium
+  if errorlevel 1 (
+    echo [ERROR] Chromium install failed. Without it Feishu automation cannot run.
+    echo   Common causes:
+    echo     1. Network / firewall / GFW blocked the download
+    echo     2. Company proxy required (set HTTP_PROXY^)
+    echo     3. Disk space issue
+    echo   Retry manually:  cd auto_feishu ^&^& npx playwright install chromium
+    exit /b 1
+  )
+) else (
+  echo [INFO] Chromium already installed, skip download.
+)
 
 echo [INFO] Starting Feishu one-click setup...
 call npm run feishu:setup

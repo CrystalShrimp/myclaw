@@ -9,13 +9,14 @@ def stop_existing_processes(current_pid: int) -> None:
     """第一性原理全量清杀：彻底清理 myclaw 关联的所有 4 层 Python 进程与端口占用。"""
     print("Stopping existing MyClaw processes and child workers...")
     root_dir = str(Path(__file__).resolve().parent.parent).lower()
-    
+
     try:
-        # 1. 查找所有命令行或可执行路径中包含 myclaw 目录、app.main 或 tray.pyw 的 Python 进程
+        # 1. 用 CIM（比 WMI 快得多）枚举所有 python/pythonw 进程，按命令行/可执行路径过滤
         ps_cmd = (
             'powershell -NoProfile -Command "'
-            'Get-WmiObject Win32_Process | Where-Object { `$_.Name -like \'*python*\' } | '
-            'Select-Object ProcessId, ExecutablePath, CommandLine | ConvertTo-Json"'
+            'Get-CimInstance Win32_Process | '
+            'Where-Object { $_.Name -match \'python\' } | '
+            'Select-Object ProcessId, ExecutablePath, CommandLine | ConvertTo-Json -Depth 3"'
         )
         res = subprocess.run(ps_cmd, shell=True, capture_output=True, text=True)
         if res.returncode == 0 and res.stdout.strip():
@@ -27,12 +28,13 @@ def stop_existing_processes(current_pid: int) -> None:
                     pid = item.get("ProcessId")
                     cmdline = (item.get("CommandLine") or "").lower()
                     exepath = (item.get("ExecutablePath") or "").lower()
-                    
+
                     if pid and int(pid) != current_pid:
                         # 只要进程命令行或可执行路径与本项目有关，全部予以终止
                         if "app.main" in cmdline or "tray.pyw" in cmdline or root_dir in cmdline or root_dir in exepath:
                             subprocess.run(f"taskkill /F /T /PID {pid}", shell=True, capture_output=True)
-                            print(f"Killed MyClaw worker process tree {pid}")
+                            exetag = " (anaconda)" if "anaconda" in exepath else ""
+                            print(f"Killed MyClaw worker process tree {pid}{exetag}")
             except Exception as parse_err:
                 print("JSON parse warning:", parse_err)
     except Exception as e:
@@ -85,34 +87,26 @@ def main():
     subprocess.run(ps_cmd, shell=True)
     print("Successfully triggered desktop launcher.")
 
-    print("Verifying service startup, tray process & health...")
+    print("Verifying service startup via /health...")
     success = False
-    new_pid = None
-    for i in range(15):
+    last_detail = ""
+    for i in range(30):
         time.sleep(1)
-        # 验证 1: 检查 HTTP 端口
         try:
             req = urllib.request.urlopen("http://127.0.0.1:8080/health", timeout=2)
             if req.status == 200:
                 data = json.loads(req.read().decode('utf-8'))
-                # 验证 2: 确认新托盘进程在运行
-                ps_chk = subprocess.run(
-                    'powershell -NoProfile -Command "Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -like \'*tray.pyw*\' } | Select-Object -ExpandProperty ProcessId"',
-                    shell=True, capture_output=True, text=True
-                )
-                tray_pids = ps_chk.stdout.strip().split()
-                if tray_pids:
-                    new_pid = tray_pids[0]
-                    print(f"Service health check OK: {data} (Tray PID: {new_pid})")
-                    success = True
-                    break
-        except Exception:
-            print(f"Waiting for service startup... ({i+1}/15)")
+                last_detail = f"ws_connected={data.get('ws_connected')}"
+                print(f"Service health check OK: {last_detail}")
+                success = True
+                break
+        except Exception as exc:
+            print(f"Waiting for service startup... ({i+1}/30) {exc}")
 
     if success:
-        print(f"SUCCESS: MyClaw desktop service and tray icon (PID {new_pid}) are verified up and running!")
+        print("SUCCESS: MyClaw backend is up. Tray icon may take a few more seconds; check system tray.")
     else:
-        print("WARNING: Health check timed out.")
+        print("WARNING: /health did not return 200 within 30s. Check logs/myclaw.log and myclaw-tray-error.log.")
 
 if __name__ == "__main__":
     main()

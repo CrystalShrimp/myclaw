@@ -502,6 +502,69 @@ def predict_continue_session(workspace: str) -> dict:
     }
 
 
+def list_workspace_sessions(workspace: str) -> list[dict]:
+    """枚举当前工作区在 `~/.claude/projects/<encoded>/` 下的全部 Claude Session。
+
+    返回按 mtime 倒序排列：[{"session_id", "mtime", "last_summary", "message_count"}]。
+    message_count 只统计 user/assistant 文本行（与 /status 的口径一致）。
+    """
+    if not workspace:
+        return []
+    ws_resolved = str(Path(workspace).resolve())
+    claude_dir = _claude_config_path() or (Path.home() / ".claude")
+    encoded_cwd = re.sub(r"[^A-Za-z0-9]", "-", ws_resolved)
+    project_dir = claude_dir / "projects" / encoded_cwd
+    if not project_dir.is_dir():
+        return []
+
+    out: list[dict] = []
+    for f in project_dir.glob("*.jsonl"):
+        try:
+            mtime = f.stat().st_mtime
+            sid = f.stem
+            last_text = ""
+            msg_count = 0
+            lines = f.read_text("utf-8", errors="replace").splitlines()
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if row.get("type") not in ("user", "assistant"):
+                    continue
+                msg_count += 1
+                if not last_text:
+                    msg = row.get("message", {})
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        parts = [
+                            b.get("text", "")
+                            for b in content
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        ]
+                        content = " ".join(p for p in parts if p)
+                    if isinstance(content, str) and content.strip():
+                        last_text = content.strip()[:60]
+            # 与 predict_continue_session 同口径：跳过几乎空白的 stub 文件
+            if not (last_text or len(lines) > 2):
+                continue
+            out.append({
+                "session_id": sid,
+                "mtime": mtime,
+                "last_summary": last_text or "(无文本)",
+                "message_count": msg_count,
+            })
+        except Exception as e:
+            logger.warning("Failed to read session file %s: %s", f, e)
+            continue
+
+    out.sort(key=lambda x: -x["mtime"])
+    return out
+
+
 def _claude_dir_selection_card() -> dict:
     from app.feishu.cards import build_claude_dir_selection_card
     return build_claude_dir_selection_card(str(_detected_claude_config_path()))
@@ -975,6 +1038,35 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         )
         resp.toast = toast
         return resp
+
+    # Session selection card (/session)
+    if card_type == "session_select" and act == "resume_session":
+        target_sid = (action.option or "").strip()
+        if not target_sid and action.value:
+            target_sid = action.value.get("session_id", "").strip()
+        resp = P2CardActionTriggerResponse()
+        toast = CallBackToast()
+        if not target_sid:
+            toast.type = "error"
+            toast.content = "未选择 Session"
+            resp.toast = toast
+            return resp
+
+        session = session_manager.get_user_session(open_id)
+        if not session:
+            session = session_manager.create_session(open_id, "")
+        session.claude_session_id = target_sid
+        session.context_tokens = 0
+        session_manager.save_session(session)
+        # 让下次发消息时用 --resume <id> 启动新进程；旧进程的 cancel 用任务异步等待
+        claude_cli_loop.cancel_by_user(open_id)
+        asyncio.get_running_loop().create_task(claude_cli_loop.cancel_and_wait(open_id))
+
+        toast.type = "success"
+        toast.content = f"已切换到 Session {target_sid}（下一条消息将 --resume）"
+        resp.toast = toast
+        return resp
+
     # Reuse-last-settings card after /cd
     if card_type == "reuse_confirm":
         session = session_manager.get_user_session(open_id)
@@ -1376,6 +1468,38 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
             preferences_manager.clear(open_id)
         return
 
+    # --- /session [session_id]: list sessions in current workspace and resume one ---
+    if text_lower == "/session" or text_lower.startswith("/session "):
+        parts = text.split(None, 1)
+        session = session_manager.get_user_session(open_id)
+        if not session:
+            session = session_manager.create_session(open_id, chat_id)
+        ws = session.workspace or settings.get_default_workspace()
+
+        # /session <id>: 直接走 /resume 同款路径
+        if len(parts) == 2 and parts[1].strip():
+            target_id = parts[1].strip()
+            await claude_cli_loop.cancel_and_wait(open_id)
+            session.claude_session_id = target_id
+            session.context_tokens = 0
+            session_manager.save_session(session)
+            await feishu_client.send_text(
+                open_id,
+                f"🔑 已切换到 Claude Session `{target_id}`。\n"
+                "下一条消息将通过 `--resume` 在该会话内继续。",
+            )
+            return
+
+        # /session (无参): 弹卡片选择
+        sessions = list_workspace_sessions(ws)
+        cur = session.claude_session_id or ""
+        if cur == "__continue__":
+            cur = ""
+        from app.feishu.cards import build_session_selection_card
+        card = build_session_selection_card(ws, sessions, current_session_id=cur)
+        await feishu_client.send_card(open_id, card)
+        return
+
     # --- /resume <session_id>: switch to one exact native session ---
     if text_lower.startswith("/resume"):
         parts = text.split(None, 1)
@@ -1604,6 +1728,16 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
             await feishu_client.send_text(open_id, f"已记录到 `{workspace}` 下的 CLAUDE.md")
         except Exception as e:
             await feishu_client.send_text(open_id, f"写入失败: {e}")
+    # --- /balance [profile]: query API balance for DeepSeek / GLM ---
+    if text_lower == "/balance" or text_lower.startswith("/balance "):
+        target_profile = text[8:].strip() or None
+        from app.balance import get_profile_balance
+        from app.feishu.cards import build_balance_card
+
+        await feishu_client.send_text(open_id, "🔍 正在查询 API 供应商余额...")
+        balance_res = await get_profile_balance(target_profile)
+        card = build_balance_card(balance_res)
+        await feishu_client.send_card(open_id, card)
         return
 
     # --- /notes: write output or text to notes.md ---

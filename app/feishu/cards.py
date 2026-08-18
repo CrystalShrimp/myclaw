@@ -909,6 +909,115 @@ def build_file_selection_card(
     }
 
 
+def build_session_selection_card(
+    workspace: str,
+    sessions: list[dict],
+    current_session_id: str = "",
+) -> dict:
+    """构建 /session 选择卡片：列出当前工作区下的所有 Claude Session 供恢复。
+
+    每个 session 项格式：{"session_id", "mtime", "last_summary", "message_count"}。
+    下拉菜单 value 传 session_id，回调里用它触发 --resume。
+    """
+    import time
+
+    options: list[dict] = []
+    now = time.time()
+    for item in sessions[:50]:
+        sid = item.get("session_id", "")
+        summary = item.get("last_summary", "") or "(无摘要)"
+        mtime = item.get("mtime", 0)
+        msg_count = item.get("message_count", 0)
+        try:
+            ts_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime)) if mtime else "?"
+        except Exception:
+            ts_str = "?"
+        ago = ""
+        if mtime:
+            delta = now - mtime
+            if delta < 60:
+                ago = f"{int(delta)}秒前"
+            elif delta < 3600:
+                ago = f"{int(delta // 60)}分钟前"
+            elif delta < 86400:
+                ago = f"{int(delta // 3600)}小时前"
+            else:
+                ago = f"{int(delta // 86400)}天前"
+        marker = " · 当前" if (current_session_id and sid == current_session_id) else ""
+        label = f"{ts_str} ({ago}) · {msg_count}步 · {summary}{marker}"
+        if len(label) > 100:
+            label = label[:97] + "..."
+        options.append({
+            "text": {"tag": "plain_text", "content": label},
+            "value": sid,
+        })
+
+    elements = [
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"📁 **当前工作区：** `{workspace}`",
+            },
+        }
+    ]
+
+    if options:
+        elements.extend([
+            {"tag": "hr"},
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        f"💬 **可恢复的 Claude Session (共 {len(sessions)} 个，按最近活动排序)：**\n"
+                        "选择一个 Session 后，下一条消息将通过 `--resume` 在该会话内继续。"
+                    ),
+                },
+            },
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "select_static",
+                        "placeholder": {
+                            "tag": "plain_text",
+                            "content": "点击选择要恢复的 Session...",
+                        },
+                        "value": {
+                            "type": "session_select",
+                            "act": "resume_session",
+                        },
+                        "options": options,
+                    }
+                ],
+            },
+        ])
+    else:
+        elements.extend([
+            {"tag": "hr"},
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        "⚠️ **当前工作区下未发现任何 Claude Session。**\n"
+                        "发送一条消息后，Claude 会自动创建新的 Session。"
+                    ),
+                },
+            },
+        ])
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "选择 Session 恢复"},
+            "template": "turquoise",
+        },
+        "elements": elements,
+    }
+
+
 def build_help_card() -> dict:
     """构建 /help 指令手册交互卡片，采用 lark_md 渲染高亮且精美的指令菜单。"""
     help_md = (
@@ -926,10 +1035,12 @@ def build_help_card() -> dict:
         "- `/new` : 重置并开启全新会话 (保留当前工作区)\n"
         "- `/stop` (或 `停止`) : 强制中断当前正在运行的任务\n"
         "- `/continue [prompt]` : 恢复并继续上次的对话\n"
+        "- `/session [session_id]` : 列出当前工作区的所有 Session 供选择恢复 (不带参数弹卡片)\n"
         "- `/resume <session_id>` : 恢复指定的历史 Session\n"
         "- `/compact` : 压缩当前会话上下文\n"
         "- `/clean` : 清理旧会话数据\n\n"
         "**🛠️ 实用工具**\n"
+        "- `/balance [profile]` : 查询 API 供应商余额 (支持 DeepSeek 与 智谱 GLM)\n"
         "- `/notes` : 追加写入工作区 `notes.md`（`/notes last` / `/notes <task_id>` / `/notes <内容>`）\n"
         "- `/mem` : 显示当前工作区 CLAUDE.md 内容；`/mem <内容>` 追加；`/mem clear` 清空\n"
         "- `/sh <command>` : 在当前工作区执行一条终端命令 (30秒超时)\n"
@@ -945,6 +1056,91 @@ def build_help_card() -> dict:
             {
                 "tag": "div",
                 "text": {"tag": "lark_md", "content": help_md},
+            }
+        ],
+    }
+
+
+def build_balance_card(balance_res: dict) -> dict:
+    """Build card for /balance API query result."""
+    profile_name = balance_res.get("profile_name", "unknown")
+    if not balance_res.get("success"):
+        error_msg = balance_res.get("error", "未知错误")
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": f"API 余额查询 - {profile_name}"},
+                "template": "red",
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": f"❌ **查询失败**: {error_msg}"},
+                }
+            ],
+        }
+
+    provider = balance_res.get("provider", "API 供应商")
+    lines = [f"💳 **供应商**: `{provider}` (Profile: `{profile_name}`)\n"]
+
+    if provider == "DeepSeek":
+        is_avail = balance_res.get("is_available", True)
+        avail_str = "正常" if is_avail else "服务不可用/服务受限"
+        lines.append(f"服务状态: **{avail_str}**\n")
+
+        balance_infos = balance_res.get("balance_infos", [])
+        if balance_infos:
+            for b in balance_infos:
+                curr = b.get("currency", "CNY")
+                total = b.get("total_balance", "0.00")
+                granted = b.get("granted_balance", "0.00")
+                topped_up = b.get("topped_up_balance", "0.00")
+                lines.append(
+                    f"**{curr} 账户**:\n"
+                    f"• 总可用余额: `{total} {curr}`\n"
+                    f"• 充值本金: `{topped_up} {curr}`\n"
+                    f"• 赠送体验金: `{granted} {curr}`\n"
+                )
+        else:
+            lines.append("未查找到账户余额明细。")
+
+    elif provider == "智谱 GLM":
+        raw = balance_res.get("raw_data", {})
+        data = raw.get("data", raw) if isinstance(raw, dict) else raw
+        if isinstance(data, dict):
+            level = data.get("level", "")
+            if level:
+                lines.append(f"账户等级: **{level.upper()}**\n")
+
+            limits = data.get("limits", [])
+            if isinstance(limits, list) and limits:
+                lines.append("📊 **用量与流控限额明细**:")
+                for item in limits:
+                    if isinstance(item, dict):
+                        l_type = item.get("type", "LIMIT")
+                        pct = item.get("percentage", 0)
+                        rem = item.get("remaining")
+                        val = item.get("currentValue")
+                        if rem is not None:
+                            lines.append(f"• **{l_type}**: 已使用 `{pct}%` | 剩余额度: `{rem}` (用量: `{val}`)")
+                        else:
+                            lines.append(f"• **{l_type}**: 已使用 `{pct}%`")
+            else:
+                lines.append("未获取到具体限额数据。")
+        else:
+            lines.append(f"```json\n{json.dumps(raw, ensure_ascii=False, indent=2)}\n```")
+
+    card_md = "\n".join(lines)
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"💳 API 额度余额 ({provider})"},
+            "template": "blue",
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": card_md},
             }
         ],
     }

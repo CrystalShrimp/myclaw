@@ -27,6 +27,8 @@ NIF_MESSAGE, NIF_ICON, NIF_TIP = 1, 2, 4
 user32 = ctypes.windll.user32
 shell32 = ctypes.windll.shell32
 kernel32 = ctypes.windll.kernel32
+gdiplus = ctypes.windll.gdiplus
+
 kernel32.GetModuleHandleW.restype = wintypes.HMODULE
 user32.CreateWindowExW.restype = wintypes.HWND
 user32.CreateWindowExW.argtypes = [
@@ -38,6 +40,85 @@ user32.DefWindowProcW.restype = wintypes.LPARAM
 user32.DefWindowProcW.argtypes = [
     wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
 ]
+
+
+class GDIPlusStartupInput(ctypes.Structure):
+    _fields_ = [
+        ("GdiplusVersion", ctypes.c_uint32),
+        ("DebugEventCallback", ctypes.c_void_p),
+        ("SuppressBackgroundThread", ctypes.c_int),
+        ("SuppressExternalCodecs", ctypes.c_int),
+    ]
+
+
+def load_custom_icon(target_size: int = 32) -> int:
+    """Load custom icon with center square crop and high-quality bicubic resampling."""
+    candidates = [
+        ROOT / "icon.png",
+        ROOT / "icon.jpg",
+        ROOT / "icon.ico",
+    ]
+    target_path = None
+    for p in candidates:
+        if p.exists():
+            target_path = str(p.resolve())
+            break
+
+    if target_path:
+        try:
+            token = ctypes.c_ulong()
+            input_struct = GDIPlusStartupInput(1, None, 0, 0)
+            if gdiplus.GdiplusStartup(ctypes.byref(token), ctypes.byref(input_struct), None) == 0:
+                src_bitmap = ctypes.c_void_p()
+                if gdiplus.GdipCreateBitmapFromFile(ctypes.c_wchar_p(target_path), ctypes.byref(src_bitmap)) == 0:
+                    w = ctypes.c_uint()
+                    h = ctypes.c_uint()
+                    gdiplus.GdipGetImageWidth(src_bitmap, ctypes.byref(w))
+                    gdiplus.GdipGetImageHeight(src_bitmap, ctypes.byref(h))
+                    orig_w, orig_h = w.value, h.value
+
+                    # Center crop square
+                    crop_size = min(orig_w, orig_h)
+                    src_x = (orig_w - crop_size) // 2
+                    src_y = (orig_h - crop_size) // 2
+
+                    icon_w = user32.GetSystemMetrics(49) or target_size
+                    icon_h = user32.GetSystemMetrics(50) or target_size
+                    icon_size = max(icon_w, icon_h, target_size)
+
+                    dst_bitmap = ctypes.c_void_p()
+                    # Format32bppArgb = 0x26200A
+                    if gdiplus.GdipCreateBitmapFromScan0(icon_size, icon_size, 0, 0x26200A, None, ctypes.byref(dst_bitmap)) == 0:
+                        graphics = ctypes.c_void_p()
+                        gdiplus.GdipGetImageGraphicsContext(dst_bitmap, ctypes.byref(graphics))
+
+                        # High quality render modes
+                        # InterpolationModeHighQualityBicubic = 7, SmoothingModeAntiAlias = 4, PixelOffsetModeHighQuality = 4
+                        gdiplus.GdipSetInterpolationMode(graphics, 7)
+                        gdiplus.GdipSetSmoothingMode(graphics, 4)
+                        gdiplus.GdipSetPixelOffsetMode(graphics, 4)
+
+                        gdiplus.GdipDrawImageRectRectI(
+                            graphics, src_bitmap,
+                            0, 0, icon_size, icon_size,
+                            src_x, src_y, crop_size, crop_size,
+                            2, None, None, None
+                        )
+
+                        hicon = ctypes.c_void_p()
+                        res = gdiplus.GdipCreateHICONFromBitmap(dst_bitmap, ctypes.byref(hicon))
+
+                        gdiplus.GdipDeleteGraphics(graphics)
+                        gdiplus.GdipDisposeImage(dst_bitmap)
+                        gdiplus.GdipDisposeImage(src_bitmap)
+
+                        if res == 0 and hicon.value:
+                            return hicon.value
+                    gdiplus.GdipDisposeImage(src_bitmap)
+        except Exception:
+            pass
+
+    return user32.LoadIconW(None, 32512)
 
 class NOTIFYICONDATA(ctypes.Structure):
     _fields_ = [
@@ -145,13 +226,27 @@ def start_server() -> None:
             kernel32.AssignProcessToJobObject(job_handle, int(server._handle))
         except Exception:
             pass
-    for _ in range(30):
+    # 30 次 × 0.5s = 15s 太紧（冷启 + 遗留进程清理时常 >15s），放宽到 60 次 = 30s。
+    # 超时不再 raise——让 tray 继续运行，右键菜单"查看状态"会自然显示"后端未响应"，
+    # 用户可以看到日志而不是面对一个孤立的错误弹窗。
+    for _ in range(60):
         if healthy():
             return
         if server.poll() is not None:
             break
         time.sleep(0.5)
-    raise RuntimeError(f"myclaw failed to start. Check {LOG_PATH}")
+    if healthy():
+        return
+    try:
+        tail = ""
+        if LOG_PATH.exists():
+            tail = "\n".join(LOG_PATH.read_text("utf-8", errors="replace").splitlines()[-20:])
+        (ROOT / "myclaw-tray-error.log").write_text(
+            f"myclaw backend did not become healthy within 30s. Recent log tail:\n{tail}",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
 
 
 def stop_server() -> None:
@@ -221,7 +316,7 @@ def main() -> None:
     nid.hWnd, nid.uID = hwnd, 1
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
     nid.uCallbackMessage = WM_TRAY
-    nid.hIcon = user32.LoadIconW(None, 32512)
+    nid.hIcon = load_custom_icon()
     nid.szTip = "myclaw"
     shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(nid))
     msg = wintypes.MSG()

@@ -47,6 +47,13 @@ doc/
 
 # Debug
 openclaw_debug/
+
+# Legacy feishu_bot automation artifacts — contain live session tokens,
+# browser profile (cookies/login state) and recorded HTTP traffic with secrets.
+# The whole toolchain is deprecated; only MANUAL_SETUP.md and openclaw-scopes.json are useful.
+scripts/feishu_bot/chrome_profile/
+scripts/feishu_bot/recording/
+scripts/feishu_bot/artifacts/
 # Feishu setup runtime artifacts and credentials
 auto_feishu/feishu-app-result.json
 auto_feishu/artifacts/

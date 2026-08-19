@@ -118,7 +118,7 @@ uv run python -m app.main
 |---|---|---|
 | `ALLOWED_USERS` | `""` | 允许的 open_id 白名单，逗号分隔；**空 = 全部允许**（生产环境强烈建议填） |
 
-获取 open_id 的方式：让用户先在飞书发任意消息，看 `myclaw.log` 里的 `From ou_xxx: ...` 日志。
+获取 open_id 的方式：让用户先在飞书发任意消息。若其不在白名单内，机器人会直接回复一条包含其 Open ID 和加白指引的消息（自助式）；也可从 `myclaw.log` 里的 `From ou_xxx: ...` 日志获取。
 
 ### 4.7 审计 / 服务
 

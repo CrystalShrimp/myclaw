@@ -205,6 +205,8 @@ def start_server() -> None:
     if healthy():
         return
     env = os.environ.copy()
+    venv_scripts = str((ROOT / ".venv" / "Scripts").resolve())
+    env["PATH"] = venv_scripts + os.pathsep + env.get("PATH", "")
     for name in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
         env.pop(name, None)
     python = ROOT / ".venv" / "Scripts" / "python.exe"

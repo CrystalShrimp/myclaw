@@ -1164,7 +1164,15 @@ def _build_done_card(title: str, color: str, approval_id: str) -> object:
 
 async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> None:
     if not _is_user_allowed(open_id):
-        await feishu_client.send_text(open_id, "抱歉，您没有使用权限。")
+        allowed_list = settings.get_allowed_users()
+        err_msg = (
+            f"🚫 **权限拦截提醒**\n"
+            f"• 您的飞书 Open ID: `{open_id or '(空)'}`\n"
+            f"• 当前允许的用户列表: `{', '.join(allowed_list) if allowed_list else '(空，未配置白名单)'}`\n\n"
+            f"💡 **解决建议**：请在 `.env` 中把您的 Open ID 加入 `ALLOWED_USERS`；"
+            f"如需对所有用户开放，请把 `.env` 中的 `ALLOWED_USERS` 设为空。"
+        )
+        await feishu_client.send_text(open_id, err_msg)
         return
 
     text = text.strip()

@@ -6,41 +6,33 @@ import json
 from pathlib import Path
 
 def stop_existing_processes(current_pid: int) -> None:
-    """第一性原理全量清杀：彻底清理 myclaw 关联的所有 4 层 Python 进程与端口占用。"""
+    """清理 myclaw 关联的所有 Python 进程（不分 .venv / Anaconda / 系统）与 8080 端口占用。
+
+    进程清杀委托给 scripts/stop_myclaw.ps1（-File 方式调用）：
+    之前的实现把 PowerShell 代码拼成字符串经 cmd 转发，`$_` 等符号在
+    bash/cmd/powershell 多层转义下会被改写（实测变成 extglob），且
+    过滤条件会误杀调用者自身。.ps1 文件 + CallerPid 排除彻底规避。
+    """
     print("Stopping existing MyClaw processes and child workers...")
-    root_dir = str(Path(__file__).resolve().parent.parent).lower()
-
+    ps1 = Path(__file__).resolve().parent / "stop_myclaw.ps1"
     try:
-        # 1. 用 CIM（比 WMI 快得多）枚举所有 python/pythonw 进程，按命令行/可执行路径过滤
-        ps_cmd = (
-            'powershell -NoProfile -Command "'
-            'Get-CimInstance Win32_Process | '
-            'Where-Object { $_.Name -match \'python\' } | '
-            'Select-Object ProcessId, ExecutablePath, CommandLine | ConvertTo-Json -Depth 3"'
+        res = subprocess.run(
+            [
+                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", str(ps1), "-CallerPid", str(current_pid),
+            ],
+            capture_output=True, text=True,
         )
-        res = subprocess.run(ps_cmd, shell=True, capture_output=True, text=True)
-        if res.returncode == 0 and res.stdout.strip():
-            try:
-                items = json.loads(res.stdout)
-                if isinstance(items, dict):
-                    items = [items]
-                for item in items:
-                    pid = item.get("ProcessId")
-                    cmdline = (item.get("CommandLine") or "").lower()
-                    exepath = (item.get("ExecutablePath") or "").lower()
-
-                    if pid and int(pid) != current_pid:
-                        # 只要进程命令行或可执行路径与本项目有关，全部予以终止
-                        if "app.main" in cmdline or "tray.pyw" in cmdline or root_dir in cmdline or root_dir in exepath:
-                            subprocess.run(f"taskkill /F /T /PID {pid}", shell=True, capture_output=True)
-                            exetag = " (anaconda)" if "anaconda" in exepath else ""
-                            print(f"Killed MyClaw worker process tree {pid}{exetag}")
-            except Exception as parse_err:
-                print("JSON parse warning:", parse_err)
+        for line in (res.stdout or "").splitlines():
+            line = line.strip()
+            if line:
+                print("Killed MyClaw process:", line)
+        if res.returncode != 0:
+            print("stop_myclaw.ps1 warning:", (res.stderr or "").strip()[:200])
     except Exception as e:
         print("Error stopping processes:", e)
 
-    # 2. 检查并强制释放 8080 端口占用者
+    # 兜底：确保 8080 端口占用者被释放
     try:
         netstat_cmd = 'netstat -ano | findstr :8080'
         res = subprocess.run(netstat_cmd, shell=True, capture_output=True, text=True)
@@ -77,14 +69,16 @@ def main():
     print(f"Launching desktop application via MyClaw.bat: {bat_path}")
 
     # 使用 PowerShell 在当前用户 Active Session 下原生启动 MyClaw.bat
+    # list 形式传参，避免 shell 字符串在 bash/cmd/powershell 多层转义下被改写。
     bat_abs = str(Path(bat_path).resolve()).replace("'", "''")
     root_abs = str(Path(root_dir).resolve()).replace("'", "''")
 
-    ps_cmd = (
-        f'powershell -ExecutionPolicy Bypass -NoProfile -Command "'
-        f'Start-Process -FilePath \'{bat_abs}\' -WorkingDirectory \'{root_abs}\'"'
+    subprocess.run(
+        [
+            "powershell", "-ExecutionPolicy", "Bypass", "-NoProfile", "-Command",
+            f"Start-Process -FilePath '{bat_abs}' -WorkingDirectory '{root_abs}'",
+        ],
     )
-    subprocess.run(ps_cmd, shell=True)
     print("Successfully triggered desktop launcher.")
 
     print("Verifying service startup via /health...")

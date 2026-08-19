@@ -1866,11 +1866,36 @@ async function readFeishuCredentials(envPath: string): Promise<{ appId: string; 
     return null;
   }
 }
+async function stopLocalClawService(ctx: StepContext): Promise<void> {
+  if (process.platform !== "win32") return;
+  try {
+    const out = execFileSync("cmd", ["/c", "netstat -ano | findstr :8080"], { encoding: "utf8" }).toString();
+    const pids = new Set<string>();
+    for (const line of out.split("\n")) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length >= 5 && parts[3] === "LISTENING" && /^\d+$/.test(parts[4])) {
+        pids.add(parts[4]);
+      }
+    }
+    for (const pid of pids) {
+      try {
+        execFileSync("taskkill", ["/F", "/T", "/PID", pid], { stdio: "ignore" });
+        ctx.logger.info("已停止占用 8080 端口的本地服务进程：" + pid);
+      } catch {
+        // 进程可能已退出
+      }
+    }
+  } catch {
+    // netstat 无输出 = 服务本就没在跑
+  }
+}
+
 async function waitForLocalClawOnline(ctx: StepContext): Promise<void> {
   const url = ctx.config.localServiceUrl;
   const deadline = Date.now() + ctx.config.localServiceWaitMs;
   let lastError = "服务未响应";
   let started = false;
+  let restarted = false;
 
   while (Date.now() < deadline) {
     try {
@@ -1881,7 +1906,13 @@ async function waitForLocalClawOnline(ctx: StepContext): Promise<void> {
         return;
       }
       lastError = "服务已响应，但 WebSocket 未连接（" + JSON.stringify(body) + "）";
-      break;
+      // 服务多半是带着旧/空凭据启动的：停掉它，下一轮 fetch 失败时会被重新拉起并加载最新 .env
+      if (!restarted && ctx.config.startLocalService) {
+        ctx.logger.warn("WebSocket 未连接，重启本地服务以加载刚写入的 .env 凭据...");
+        await stopLocalClawService(ctx);
+        started = false;
+        restarted = true;
+      }
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
       if (!started && ctx.config.startLocalService) {
@@ -2344,11 +2375,9 @@ async function configureEventSubscription(ctx: StepContext): Promise<void> {
     }
   }
 
-  if (missingEvents.length === 0) {
-    ctx.result.eventSubscriptionConfigured = true;
-    return;
-  }
-
+  // 注意：不能在消息事件齐全时提前 return —— 后面的“回调配置”（card.action.trigger）
+  // 段必须始终执行，否则审批卡片回调可能漏配却把标志置成 true。
+  if (missingEvents.length > 0) {
   const addEvent = await clickByCandidates(ctx.page, ["添加事件"], ctx.config.timeoutMs, ctx.logger);
   if (!addEvent) throw new Error("未找到可用的添加事件按钮。");
   const eventDialog = (await findVisibleModal(ctx.page, ctx.config.timeoutMs)) ?? ctx.page;
@@ -2373,10 +2402,32 @@ async function configureEventSubscription(ctx: StepContext): Promise<void> {
   if (!confirmAdd) throw new Error("勾选事件后未找到添加确认按钮。");
   await confirmAdd.locator.click({ timeout: ctx.config.timeoutMs });
 
+  // 新版飞书在添加事件后会弹“推荐开通以下权限”二级确认框，必须先确认，否则
+  // 主对话框不会关闭，“回调配置”页签也会被弹窗遮挡导致点击超时。
+  const permissionConfirm = await waitForEnabledAction(
+    ctx.page,
+    ["申请权限", "确认开通", "开通权限", "确认", "确定"],
+    Math.min(ctx.config.timeoutMs, 8000)
+  );
+  if (permissionConfirm) {
+    ctx.logger.info("检测到“推荐开通以下权限”弹窗，已确认开通。");
+    await permissionConfirm.locator.click({ timeout: ctx.config.timeoutMs }).catch(() => undefined);
+  }
+
+  // 关闭仍打开的“添加事件”主对话框（点了“添加”但没自动关的场景）。
+  const cancelAdd = await waitForEnabledAction(eventDialog, ["取消"], 3000);
+  if (cancelAdd) {
+    await cancelAdd.locator.click({ timeout: 3000 }).catch(() => undefined);
+  } else {
+    await ctx.page.keyboard.press("Escape").catch(() => undefined);
+  }
+  await ctx.page.waitForTimeout(1000);
+
   for (const eventName of missingEvents) {
     const visible = await waitForAnyText(ctx.page, [eventName], ctx.config.timeoutMs);
     if (!visible) throw new Error("添加后未在事件列表中找到：" + eventName);
   }
+  } // end if (missingEvents.length > 0)
 
   const callbackNames = ctx.config.eventNames.filter((name) => name.startsWith("card."));
   if (callbackNames.length > 0) {
@@ -2768,6 +2819,12 @@ async function mainV2(): Promise<void> {
         logger.info("已读取根目录 .env 中的现有飞书凭据。");
       } else {
         await fetchCredentials(ctx);
+      }
+      // 立即写入 .env：事件订阅步骤要求本地服务带着有效凭据建立 WS 长连接，
+      // 不能等到发布成功后才同步（全新部署时 .env 是空的，服务会起成"无凭据"状态）。
+      if (ctx.result.appId && ctx.runtimeAppSecret) {
+        await writeFeishuCredentials(config.envPath, ctx.result.appId, ctx.runtimeAppSecret);
+        logger.info("已将最新凭据写入根目录 .env（供本地服务 WebSocket 连接使用）。");
       }
     });
 

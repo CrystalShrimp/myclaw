@@ -1,20 +1,31 @@
 @echo off
+setlocal enabledelayedexpansion
 chcp 65001 >nul 2>&1
 cd /d "%~dp0"
 
 if not exist .env (
     echo [ERROR] .env file not found!
     echo Copy examples\.env.example to .env and fill in Feishu credentials first.
-    pause
-    exit /b 2
+    echo.
+    set /p RUN_SETUP="[?] 是否立即运行 MyClaw-Setup.bat 自动进行环境配置？ [Y/N]: "
+    if /i "!RUN_SETUP!"=="Y" (
+        call "%~dp0MyClaw-Setup.bat"
+    ) else (
+        pause
+        exit /b 2
+    )
 )
 
 if not exist ".venv\Scripts\pythonw.exe" (
     echo [ERROR] .venv not found: "%~dp0.venv\Scripts\pythonw.exe"
-    echo Run this once to install dependencies:
-    echo     uv sync
-    pause
-    exit /b 3
+    echo.
+    set /p RUN_SETUP="[?] 是否立即运行 MyClaw-Setup.bat 自动安装依赖并构建环境？ [Y/N]: "
+    if /i "!RUN_SETUP!"=="Y" (
+        call "%~dp0MyClaw-Setup.bat"
+    ) else (
+        pause
+        exit /b 3
+    )
 )
 
 REM === Cleanup stale myclaw processes (any Python flavor) before launch ===

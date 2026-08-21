@@ -1,16 +1,15 @@
 @echo off
 setlocal enabledelayedexpansion
-chcp 65001 >nul 2>&1
 cd /d "%~dp0"
 
 echo ===================================================
-echo           MyClaw çŽ¯å¢ƒä¾èµ–è‡ªæ£€ä¸Žè‡ªåŠ¨å®‰è£…å·¥å…·
+echo           MyClaw »·¾³ÒÀÀµ×Ô¼ìÓë×Ô¶¯°²×°¹¤¾ß
 echo ===================================================
 echo.
 
 set NEED_RESTART_CMD=0
 
-REM ================= 1. Node.js 20+ ç‰ˆæœ¬æ£€æŸ¥ =================
+REM ================= 1. Node.js 20+ °æ±¾¼ì²é =================
 set NODE_OK=0
 where node >nul 2>&1
 if errorlevel 1 goto CHECK_NODE_DONE
@@ -21,47 +20,47 @@ if %NODE_MAJOR% geq 20 set NODE_OK=1
 
 :CHECK_NODE_DONE
 if "%NODE_OK%"=="1" (
-    echo [OK] Node.js 20+ çŽ¯å¢ƒæ£€æŸ¥é€šè¿‡ï¼
+    echo [OK] Node.js 20+ »·¾³¼ì²éÍ¨¹ý£¡
     goto CHECK_VENV
 )
 
-echo [!] è­¦å‘Š: æœªæ£€æµ‹åˆ° Node.js 20+ çŽ¯å¢ƒ (auto_feishu éœ€è¦ Node.js v20 æˆ–æ›´é«˜ç‰ˆæœ¬)ã€‚
-set /p CHOICE_NODE="[?] æ˜¯å¦è‡ªåŠ¨ä¸‹è½½å¹¶é™é»˜å®‰è£… Node.js v20.18.0 LTSï¼Ÿ [Y/N]: "
+echo [!] ¾¯¸æ: Î´¼ì²âµ½ Node.js 20+ »·¾³ (auto_feishu ÐèÒª Node.js v20 »ò¸ü¸ß°æ±¾)¡£
+set /p CHOICE_NODE="[?] ÊÇ·ñ×Ô¶¯ÏÂÔØ²¢¾²Ä¬°²×° Node.js v20.18.0 LTS£¿ [Y/N]: "
 if /i not "%CHOICE_NODE%"=="Y" if /i not "%CHOICE_NODE%"=="" (
-    echo [-] å·²è·³è¿‡ Node.js å®‰è£…ã€‚
+    echo [-] ÒÑÌø¹ý Node.js °²×°¡£
     goto CHECK_VENV
 )
 
-echo [!] æ­£åœ¨é€šè¿‡å›½å†…é•œåƒä¸‹è½½ Node.js 20.18.0 å®˜æ–¹å®‰è£…åŒ…...
+echo [!] ÕýÔÚÍ¨¹ý¹úÄÚ¾µÏñÏÂÔØ Node.js 20.18.0 ¹Ù·½°²×°°ü...
 set "MSI_PATH=%TEMP%\node_v20.msi"
 curl.exe -L -o "%MSI_PATH%" "https://npmmirror.com/mirrors/node/v20.18.0/node-v20.18.0-x64.msi"
 if exist "%MSI_PATH%" (
-    echo [!] æ­£åœ¨é™é»˜å®‰è£… Node.js...
+    echo [!] ÕýÔÚ¾²Ä¬°²×° Node.js...
     msiexec.exe /i "%MSI_PATH%" /quiet /norestart
     del /f /q "%MSI_PATH%" >nul 2>&1
     set NEED_RESTART_CMD=1
     set "PATH=%ProgramFiles%\nodejs;%PATH%"
-    echo [OK] Node.js 20.18.0 å·²é™é»˜å®‰è£…ï¼
+    echo [OK] Node.js 20.18.0 ÒÑ¾²Ä¬°²×°£¡
 )
 
 :CHECK_VENV
 echo.
-REM ================= 2. Python .venv ç‹¬ç«‹çŽ¯å¢ƒ =================
+REM ================= 2. Python .venv ¶ÀÁ¢»·¾³ =================
 if exist ".venv\Scripts\python.exe" (
-    echo [OK] Python ç‹¬ç«‹çŽ¯å¢ƒæ£€æŸ¥é€šè¿‡: .venv\Scripts\python.exe
+    echo [OK] Python ¶ÀÁ¢»·¾³¼ì²éÍ¨¹ý: .venv\Scripts\python.exe
     goto CHECK_FEISHU
 )
 
-echo [!] è­¦å‘Š: æœªæ£€æµ‹åˆ° Python ç‹¬ç«‹çŽ¯å¢ƒ (.venv)ã€‚
-set /p CHOICE_VENV="[?] æ˜¯å¦è‡ªåŠ¨å®‰è£… uv å¹¶åˆ›å»º Python .venv çŽ¯å¢ƒï¼Ÿ [Y/N]: "
+echo [!] ¾¯¸æ: Î´¼ì²âµ½ Python ¶ÀÁ¢»·¾³ (.venv)¡£
+set /p CHOICE_VENV="[?] ÊÇ·ñ×Ô¶¯°²×° uv ²¢´´½¨ Python .venv »·¾³£¿ [Y/N]: "
 if /i not "%CHOICE_VENV%"=="Y" if /i not "%CHOICE_VENV%"=="" (
-    echo [-] å·²è·³è¿‡ Python .venv åˆ›å»ºã€‚
+    echo [-] ÒÑÌø¹ý Python .venv ´´½¨¡£
     goto CHECK_FEISHU
 )
 
 where uv >nul 2>&1
 if errorlevel 1 (
-    echo [!] æ­£åœ¨è‡ªåŠ¨ä½¿ç”¨ curl ä¸‹è½½å¹¶å®‰è£… uv å·¥å…·...
+    echo [!] ÕýÔÚ×Ô¶¯Ê¹ÓÃ curl ÏÂÔØ²¢°²×° uv ¹¤¾ß...
     set "UV_INSTALLER=%TEMP%\uv_install.ps1"
     curl.exe -L -o "%UV_INSTALLER%" "https://astral.sh/uv/install.ps1"
     if exist "!UV_INSTALLER!" (
@@ -71,59 +70,59 @@ if errorlevel 1 (
     set "PATH=%USERPROFILE%\.cargo\bin;%USERPROFILE%\.local\bin;%PATH%"
 )
 
-echo [!] æ­£åœ¨è°ƒç”¨ uv sync åˆ›å»ºé¡¹ç›®çŽ¯å¢ƒ...
+echo [!] ÕýÔÚµ÷ÓÃ uv sync ´´½¨ÏîÄ¿»·¾³...
 call uv sync
 if exist ".venv\Scripts\python.exe" (
-    echo [OK] Python ç‹¬ç«‹çŽ¯å¢ƒ (.venv) åˆ›å»ºæˆåŠŸï¼
+    echo [OK] Python ¶ÀÁ¢»·¾³ (.venv) ´´½¨³É¹¦£¡
 ) else (
-    echo [X] .venv åˆ›å»ºå¤±è´¥ï¼Œè¯·æ£€æŸ¥ Python å’Œ uv çš„ç½‘ç»œè¿žæŽ¥ã€‚
+    echo [X] .venv ´´½¨Ê§°Ü£¬Çë¼ì²é Python ºÍ uv µÄÍøÂçÁ¬½Ó¡£
 )
 
 :CHECK_FEISHU
 echo.
-REM ================= 3. auto_feishu npm å’Œ Playwright ä¾èµ– =================
+REM ================= 3. auto_feishu npm ºÍ Playwright ÒÀÀµ =================
 if not exist "auto_feishu\package.json" goto CHECK_ENV
 if exist "auto_feishu\node_modules" (
-    echo [OK] auto_feishu node_modules ä¾èµ–æ£€æŸ¥é€šè¿‡ï¼
+    echo [OK] auto_feishu node_modules ÒÀÀµ¼ì²éÍ¨¹ý£¡
     goto CHECK_ENV
 )
 
-echo [!] è­¦å‘Š: æœªæ£€æµ‹åˆ° auto_feishu çš„ Node.js ä¾èµ–åŒ… (node_modules)ã€‚
-set /p CHOICE_NPM="[?] æ˜¯å¦è‡ªåŠ¨å®‰è£… auto_feishu ä¾èµ–å’Œ Playwright æµè§ˆå™¨ï¼Ÿ [Y/N]: "
+echo [!] ¾¯¸æ: Î´¼ì²âµ½ auto_feishu µÄ Node.js ÒÀÀµ°ü (node_modules)¡£
+set /p CHOICE_NPM="[?] ÊÇ·ñ×Ô¶¯°²×° auto_feishu ÒÀÀµºÍ Playwright ä¯ÀÀÆ÷£¿ [Y/N]: "
 if /i not "%CHOICE_NPM%"=="Y" if /i not "%CHOICE_NPM%"=="" (
-    echo [-] å·²è·³è¿‡ auto_feishu npm ä¾èµ–å®‰è£…ã€‚
+    echo [-] ÒÑÌø¹ý auto_feishu npm ÒÀÀµ°²×°¡£
     goto CHECK_ENV
 )
 
 pushd auto_feishu
-echo [!] æ­£åœ¨æ‰§è¡Œ npm install ...
+echo [!] ÕýÔÚÖ´ÐÐ npm install ...
 call npm install
-echo [!] æ­£åœ¨å®‰è£… Playwright Chromium æµè§ˆå™¨å†…æ ¸...
+echo [!] ÕýÔÚ°²×° Playwright Chromium ä¯ÀÀÆ÷ÄÚºË...
 call npx playwright install chromium
 popd
-echo [OK] auto_feishu ä¾èµ–å’Œ Playwright æµè§ˆå™¨å®‰è£…å®Œæˆï¼
+echo [OK] auto_feishu ÒÀÀµºÍ Playwright ä¯ÀÀÆ÷°²×°Íê³É£¡
 
 :CHECK_ENV
 echo.
-REM ================= 4. .env çŽ¯å¢ƒæ–‡ä»¶æ£€æŸ¥ =================
+REM ================= 4. .env »·¾³ÎÄ¼þ¼ì²é =================
 if exist ".env" (
-    echo [OK] çŽ¯å¢ƒæ–‡ä»¶ .env å·²é€šè¿‡æ£€æŸ¥ï¼
+    echo [OK] »·¾³ÎÄ¼þ .env ÒÑÍ¨¹ý¼ì²é£¡
     goto FINISH
 )
 
 if not exist "examples\.env.example" goto FINISH
-echo [!] è­¦å‘Š: æœªæ£€æµ‹åˆ°çŽ¯å¢ƒæ–‡ä»¶ .envã€‚
-set /p CHOICE_ENV="[?] æ˜¯å¦è‡ªåŠ¨ä»Ž examples\.env.example åˆ›å»ºåˆå§‹ .env çŽ¯å¢ƒæ–‡ä»¶ï¼Ÿ [Y/N]: "
+echo [!] ¾¯¸æ: Î´¼ì²âµ½»·¾³ÎÄ¼þ .env¡£
+set /p CHOICE_ENV="[?] ÊÇ·ñ×Ô¶¯´Ó examples\.env.example ´´½¨³õÊ¼ .env »·¾³ÎÄ¼þ£¿ [Y/N]: "
 if /i not "%CHOICE_ENV%"=="Y" if /i not "%CHOICE_ENV%"=="" goto FINISH
 copy "examples\.env.example" ".env" >nul
-echo [OK] åˆå§‹ .env çŽ¯å¢ƒæ–‡ä»¶å·²åˆ›å»ºï¼Œè¯·ç”¨æ–‡æœ¬ç¼–è¾‘å™¨å¡«å…¥é£žä¹¦åº”ç”¨å‡­æ®ã€‚
+echo [OK] ³õÊ¼ .env »·¾³ÎÄ¼þÒÑ´´½¨£¬ÇëÓÃÎÄ±¾±à¼­Æ÷ÌîÈë·ÉÊéÓ¦ÓÃÆ¾¾Ý¡£
 
 :FINISH
 echo.
 echo ===================================================
-echo              è‡ªæ£€å’Œä¾èµ–å®‰è£…å·²å®Œæˆï¼
+echo              ×Ô¼ìºÍÒÀÀµ°²×°ÒÑÍê³É£¡
 if "%NEED_RESTART_CMD%"=="1" (
-    echo [æ³¨æ„] å·²å®‰è£…å…¨å±€ç³»ç»Ÿç»„ä»¶ï¼Œè¯·é‡æ–°æ‰“å¼€ cmd çª—å£è®©çŽ¯å¢ƒå˜é‡å®Œå…¨ç”Ÿæ•ˆã€‚
+    echo [×¢Òâ] ÒÑ°²×°È«¾ÖÏµÍ³×é¼þ£¬ÇëÖØÐÂ´ò¿ª cmd ´°¿ÚÈÃ»·¾³±äÁ¿ÍêÈ«ÉúÐ§¡£
 )
 echo ===================================================
 pause

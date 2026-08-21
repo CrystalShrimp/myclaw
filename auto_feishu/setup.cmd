@@ -1,5 +1,6 @@
 @echo off
 setlocal enabledelayedexpansion
+chcp 65001 >nul 2>&1
 cd /d "%~dp0"
 
 if /I "%HTTP_PROXY%"=="http://127.0.0.1:6984" set HTTP_PROXY=
@@ -8,11 +9,11 @@ if /I "%http_proxy%"=="http://127.0.0.1:6984" set http_proxy=
 if /I "%https_proxy%"=="http://127.0.0.1:6984" set https_proxy=
 
 echo ===================================================
-echo             auto_feishu »·¾³×Ô¼ìÓëÒ»¼üÉèÖÃ
+echo             auto_feishu ç¯å¢ƒè‡ªæ£€ä¸ä¸€é”®é…ç½®
 echo ===================================================
 echo.
 
-REM === 1. Node.js 20+ °æ±¾¼ì²â ===
+REM === 1. Node.js 20+ ç‰ˆæœ¬æ£€æŸ¥ï¼ˆå¿…éœ€ï¼‰ ===
 set NODE_OK=0
 where node >nul 2>&1
 if errorlevel 1 goto CHECK_NODE_DONE
@@ -23,32 +24,37 @@ if %NODE_MAJOR% geq 20 set NODE_OK=1
 
 :CHECK_NODE_DONE
 if "%NODE_OK%"=="1" (
-    echo [OK] Node.js 20+ ¼ì²âÍ¨¹ı¡£
+    echo [OK] Node.js 20+ æ£€æŸ¥é€šè¿‡ï¼
     goto DO_NPM_INSTALL
 )
 
-echo [!] ¾¯¸æ: Î´¼ì²âµ½ Node.js 20+ »·¾³ (auto_feishu ĞèÒª Node.js >= 20.0.0)¡£
-set /p CHOICE_NODE="[?] ÊÇ·ñ×Ô¶¯ÏÂÔØ²¢¾²Ä¬°²×° Node.js v20.18.0 LTS£¿ [Y/N]: "
-if /i not "%CHOICE_NODE%"=="Y" (
-    echo [ERROR] È±ÉÙ Node.js 20+£¬ÎŞ·¨ÔËĞĞ auto_feishu ·ÉÊé×Ô¶¯»¯½¨ÖÃ¡£
+echo [!] è­¦å‘Š: æœªæ£€æµ‹åˆ° Node.js 20+ ç¯å¢ƒ (auto_feishu éœ€è¦ Node.js v20 æˆ–æ›´é«˜ç‰ˆæœ¬)ã€‚
+set /p CHOICE_NODE="[?] æ˜¯å¦è‡ªåŠ¨ä¸‹è½½å¹¶é™é»˜å®‰è£… Node.js v20.18.0 LTSï¼Ÿ [Y/N]: "
+if /i not "%CHOICE_NODE%"=="Y" if /i not "%CHOICE_NODE%"=="" (
+    echo [ERROR] ç¼ºå°‘ Node.js 20+ï¼Œæ— æ³•è¿è¡Œ auto_feishu é£ä¹¦è‡ªåŠ¨é…ç½®ã€‚
     pause
     exit /b 1
 )
 
-echo [!] ÕıÔÚÍ¨¹ıÔ­Éú curl ÏÂÔØ Node.js 20.18.0 ¹Ù·½°²×°°ü...
+echo [!] æ­£åœ¨é€šè¿‡å›½å†…é•œåƒä¸‹è½½ Node.js 20.18.0 å®˜æ–¹å®‰è£…åŒ…...
 set "MSI_PATH=%TEMP%\node_v20.msi"
 curl.exe -L -o "%MSI_PATH%" "https://npmmirror.com/mirrors/node/v20.18.0/node-v20.18.0-x64.msi"
 if exist "%MSI_PATH%" (
-    echo [!] ÕıÔÚ¾²Ä¬°²×° Node.js...
+    echo [!] æ­£åœ¨é™é»˜å®‰è£… Node.js...
     msiexec.exe /i "%MSI_PATH%" /quiet /norestart
-    del /f /q "%MSI_PATH%" >nul 2>&1
+    del /f /q "!MSI_PATH!" >nul 2>&1
     set "PATH=%ProgramFiles%\nodejs;%PATH%"
-    echo [OK] Node.js 20.18.0 °²×°Ö¸ÁîÍê³É£¡
+    echo [OK] Node.js 20.18.0 å®‰è£…å®Œæˆï¼
+    echo [æ³¨æ„] å¦‚åç»­ node å‘½ä»¤ä¸å¯ç”¨ï¼Œè¯·é‡æ–°è¿è¡Œæœ¬è„šæœ¬æˆ–é‡å¼€ cmd çª—å£ã€‚
+) else (
+    echo [ERROR] Node.js å®‰è£…åŒ…ä¸‹è½½å¤±è´¥ï¼Œè¯·æ£€æŸ¥ç½‘ç»œåé‡è¯•ã€‚
+    pause
+    exit /b 1
 )
 
 :DO_NPM_INSTALL
 echo.
-REM === 2. Ëø¶¨µÄ npm ÒÀÀµ°²×° ===
+REM === 2. é”å®šç‰ˆ npm ä¾èµ–å®‰è£… ===
 if not exist node_modules\.bin\tsx.cmd (
     echo [INFO] Installing locked Node dependencies...
     call npm ci --ignore-scripts
@@ -59,19 +65,18 @@ if not exist node_modules\.bin\tsx.cmd (
     )
 )
 
-REM === 3. Chromium pre-check ===
-echo [INFO] Checking Playwright Chromium...
-call npx playwright install --dry-run chromium >nul 2>&1
+REM === 3. Chromium å®‰è£…ï¼ˆå¹‚ç­‰ï¼šplaywright è‡ªè¡Œæ ¡éªŒæ‰€éœ€æ„å»ºç‰ˆæœ¬ï¼Œå·²è£…ä¸”åŒ¹é…åˆ™ç§’è¿‡ï¼‰ ===
+echo [INFO] Ensuring Playwright Chromium is installed...
+call npx playwright install chromium
 if errorlevel 1 (
-    echo [INFO] Chromium not installed, downloading...
-    call npx playwright install chromium
-    if errorlevel 1 (
-        echo [ERROR] Chromium install failed.
-        pause
-        exit /b 1
-    )
-) else (
-    echo [INFO] Chromium already installed, skip download.
+    echo [ERROR] Chromium install failed. Without it Feishu automation cannot run.
+    echo   Common causes:
+    echo     1. Network / firewall blocked the download
+    echo     2. Company proxy required ^(set HTTP_PROXY^)
+    echo     3. Disk space issue
+    echo   Retry manually:  cd auto_feishu ^& npx playwright install chromium
+    pause
+    exit /b 1
 )
 
 echo.
@@ -79,6 +84,7 @@ echo [INFO] Starting Feishu one-click setup...
 call npm run feishu:setup
 if errorlevel 1 (
     echo [ERROR] Feishu setup failed.
+    echo Re-run setup.cmd to resume from the last completed step.
     pause
     exit /b 1
 )

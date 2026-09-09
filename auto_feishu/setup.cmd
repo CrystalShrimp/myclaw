@@ -1,5 +1,5 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal
 cd /d "%~dp0"
 
 if /I "%HTTP_PROXY%"=="http://127.0.0.1:6984" set HTTP_PROXY=
@@ -53,16 +53,31 @@ if exist "%MSI_PATH%" (
 
 :DO_NPM_INSTALL
 echo.
-REM === 2. 锁定版 npm 依赖安装 ===
-if not exist node_modules\.bin\tsx.cmd (
-    echo [INFO] Installing locked Node dependencies...
-    call npm ci --ignore-scripts
-    if errorlevel 1 (
-        echo [ERROR] npm ci failed.
-        pause
-        exit /b 1
-    )
+REM === 2. 锁定版 npm 依赖安装（实跑验证，防半成品 node_modules） ===
+if not exist node_modules\.bin\tsx.cmd goto TSX_MISSING
+call node_modules\.bin\tsx.cmd --version >nul 2>&1
+if errorlevel 1 goto TSX_MISSING
+echo [OK] npm 依赖检查通过！
+goto CHROMIUM_INSTALL
+
+:TSX_MISSING
+echo [INFO] npm 依赖缺失或损坏，正在重装（先清理旧 node_modules）...
+if exist node_modules rmdir /s /q node_modules
+call npm ci --ignore-scripts
+if errorlevel 1 (
+    echo [ERROR] npm ci failed.
+    pause
+    exit /b 1
 )
+call node_modules\.bin\tsx.cmd --version >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] npm ci 完成后 tsx 仍不可用，请把以上输出发给支持人员。
+    pause
+    exit /b 1
+)
+
+:CHROMIUM_INSTALL
+REM === 3. Chromium 安装（幂等：playwright 自行校验所需构建版本，已装且匹配则秒过） ===
 
 REM === 3. Chromium 安装（幂等：playwright 自行校验所需构建版本，已装且匹配则秒过） ===
 echo [INFO] Ensuring Playwright Chromium is installed...

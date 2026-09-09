@@ -256,6 +256,8 @@ class ClaudeCLILoop:
     def __init__(self) -> None:
         self._processes: dict[str, asyncio.subprocess.Process] = {}
         self._stdin_writers: dict[str, asyncio.StreamWriter] = {}
+        # open_id -> 群聊 chat_id（空 = 私聊）。崩溃告警等后续发送用它路由。
+        self._chat_targets: dict[str, str] = {}
         # list of (future, msg_state) — one entry per pending message
         self._response_futures: dict[str, list[tuple[asyncio.Future, dict]]] = {}
         self._reader_tasks: dict[str, asyncio.Task] = {}
@@ -310,6 +312,7 @@ class ClaudeCLILoop:
         profile_name: str = "",
         claude_session_id: str | None = None,
         resume_session_id: str | None = None,
+        chat_id: str = "",
     ) -> AgentResult:
         """Send a prompt to the user's interactive Claude process.
 
@@ -363,10 +366,15 @@ class ClaudeCLILoop:
                 "last_text": "",         # snapshot of last completed text block
             }
 
-            # Create the single progress card (running state, empty body)
+            # Create the single progress card (running state, empty body).
+            # 群聊发起的任务，进度卡片发回群里（chat_id 路由）。
+            self._chat_targets[open_id] = chat_id
             try:
                 card = build_progress_card(chosen, "running")
-                card_msg = await feishu_client.send_card(open_id, card)
+                if chat_id:
+                    card_msg = await feishu_client.send_card(chat_id, card, is_chat=True)
+                else:
+                    card_msg = await feishu_client.send_card(open_id, card)
                 msg_state["card_id"] = card_msg.get("data", {}).get("message_id", "")
             except Exception as e:
                 logger.warning("Failed to create progress card: %s", e)
@@ -742,13 +750,26 @@ class ClaudeCLILoop:
             is_unexpected = (self._processes.get(open_id) == proc)
             if is_unexpected and (exit_code != 0 or self._last_error):
                 reason = self._last_error or f"进程异常退出 (退出码={exit_code})"
-                asyncio.create_task(
-                    feishu_client.send_text(
-                        open_id,
-                        f"🚨 **Claude 运行进程异常退出** 🚨\n"
-                        f"退出状态码: `{exit_code}`\n"
-                        f"错误详情:\n```\n{reason[:1000]}\n```\n"
-                        f"💡 自愈提示：您可以尝试发送 `/new` 重置会话，或发送 `/cd` 切换到其他可用工作区。"
+                crash_chat_id = self._chat_targets.get(open_id, "")
+                if crash_chat_id:
+                    asyncio.create_task(
+                        feishu_client.send_text(
+                            crash_chat_id,
+                            f"🚨 **Claude 运行进程异常退出** 🚨\n"
+                            f"退出状态码: `{exit_code}`\n"
+                            f"错误详情:\n```\n{reason[:1000]}\n```\n"
+                            f"💡 自愈提示：您可以尝试发送 `/new` 重置会话，或发送 `/cd` 切换到其他可用工作区。",
+                            is_chat=True,
+                        )
+                    )
+                else:
+                    asyncio.create_task(
+                        feishu_client.send_text(
+                            open_id,
+                            f"🚨 **Claude 运行进程异常退出** 🚨\n"
+                            f"退出状态码: `{exit_code}`\n"
+                            f"错误详情:\n```\n{reason[:1000]}\n```\n"
+                            f"💡 自愈提示：您可以尝试发送 `/new` 重置会话，或发送 `/cd` 切换到其他可用工作区。"
                     )
                 )
 

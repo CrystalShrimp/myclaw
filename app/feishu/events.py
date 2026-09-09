@@ -90,6 +90,26 @@ def _iter_claude_session_messages(session_id: str) -> list[dict]:
     return out
 
 
+class ReplyChannel:
+    """把回复路由到消息来源：群消息回群，私聊回私。
+    配置流程类卡片（供应商/档位/模式选择、重用确认）不走这里，保持私聊。"""
+
+    def __init__(self, open_id: str, chat_id: str, is_group: bool) -> None:
+        self.open_id = open_id
+        self.chat_id = chat_id
+        self.is_group = is_group
+
+    async def text(self, content: str) -> dict:
+        if self.is_group and self.chat_id:
+            return await feishu_client.send_text(self.chat_id, content, is_chat=True)
+        return await feishu_client.send_text(self.open_id, content)
+
+    async def card(self, card: dict) -> dict:
+        if self.is_group and self.chat_id:
+            return await feishu_client.send_card(self.chat_id, card, is_chat=True)
+        return await feishu_client.send_card(self.open_id, card)
+
+
 # ===== Session management =====
 
 
@@ -724,9 +744,15 @@ def on_message_receive(event: P2ImMessageReceiveV1) -> None:
     text = _parse_message_text(msg.content or "{}")
     if not text:
         return
-    logger.info("From %s: %s", open_id, text[:100])
+    # 群聊里 @机器人 的消息带 @_user_N 提及标记，剥掉再当指令/提示词
+    text = re.sub(r"@_user_\d+", "", text).strip()
+    if not text:
+        return
+    chat_type = getattr(msg, "chat_type", "") or ""
+    is_group = chat_type == "group"
+    logger.info("From %s (%s): %s", open_id, chat_type or "p2p", text[:100])
     task = asyncio.get_running_loop().create_task(
-        _dispatch(open_id, chat_id, message_id, text)
+        _dispatch(open_id, chat_id, message_id, text, is_group=is_group)
     )
     task.add_done_callback(_log_dispatch_failure)
 
@@ -1162,7 +1188,8 @@ def _build_done_card(title: str, color: str, approval_id: str) -> object:
 # ===== Core dispatch =====
 
 
-async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> None:
+async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_group: bool = False) -> None:
+    reply = ReplyChannel(open_id, chat_id, is_group)
     if not _is_user_allowed(open_id):
         allowed_list = settings.get_allowed_users()
         err_msg = (
@@ -1172,7 +1199,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
             f"💡 **解决建议**：请在 `.env` 中把您的 Open ID 加入 `ALLOWED_USERS`；"
             f"如需对所有用户开放，请把 `.env` 中的 `ALLOWED_USERS` 设为空。"
         )
-        await feishu_client.send_text(open_id, err_msg)
+        await reply.text( err_msg)
         return
 
     text = text.strip()
@@ -1180,16 +1207,16 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
 
     session = session_manager.get_user_session(open_id)
     if _claude_config_path() is None:
-        await feishu_client.send_card(open_id, _claude_dir_selection_card())
+        await feishu_client.send_card(open_id, _claude_dir_selection_card())  # 配置流程：保持私聊
         return
 
     # --- /stop: interrupt current task ---
     if text_lower in ("/stop", "停止"):
         cancelled = await claude_cli_loop.cancel_and_wait(open_id)
         if cancelled:
-            await feishu_client.send_text(open_id, "已中断会话。")
+            await reply.text( "已中断会话。")
         else:
-            await feishu_client.send_text(open_id, "没有正在运行的任务。")
+            await reply.text( "没有正在运行的任务。")
         return
 
     # --- /reset: reset all setup preferences for testing ---
@@ -1248,16 +1275,16 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
                     f"状态: {session.status.value}",
                 )
             else:
-                await feishu_client.send_text(open_id, "没有活跃会话。用 /new 创建新会话。")
+                await reply.text( "没有活跃会话。用 /new 创建新会话。")
         except Exception as err:
             logger.exception("Error handling /status for user %s", open_id)
-            await feishu_client.send_text(open_id, f"状态获取失败：{err}")
+            await reply.text( f"状态获取失败：{err}")
         return
 
     # --- /help ---
     if text_lower == "/help":
         from app.feishu.cards import build_help_card
-        await feishu_client.send_card(open_id, build_help_card())
+        await reply.card( build_help_card())
         return
 
     # --- /provider [profile]: choose provider profile ---
@@ -1266,7 +1293,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
         profiles = discover_profiles()
         preferences = preferences_manager.get(open_id)
         if not profiles:
-            await feishu_client.send_text(open_id, "未发现 config/settings_*.json 模型配置。")
+            await reply.text( "未发现 config/settings_*.json 模型配置。")
             return
         if len(parts) == 2:
             name = parts[1].strip().lower()
@@ -1302,7 +1329,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
             profiles=profiles,
             active_profile=preferences.model,
         )
-        await feishu_client.send_card(open_id, card)
+        await reply.card( card)
         return
 
     # --- /model [haiku|sonnet|opus] / /level: choose model capability level ---
@@ -1321,7 +1348,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
                 preferences.level = arg
                 preferences_manager.save(open_id, preferences)
                 await claude_cli_loop.cancel_and_wait(open_id)
-                await feishu_client.send_text(open_id, f"模型规格已切换为 `{preferences.level}`。")
+                await reply.text( f"模型规格已切换为 `{preferences.level}`。")
                 return
             elif arg in profiles:
                 await feishu_client.send_text(
@@ -1371,13 +1398,13 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
             approval_id=uuid.uuid4().hex[:12],
             active_mode=preferences.mode,
         )
-        await feishu_client.send_card(open_id, card)
+        await reply.card( card)
         return
     # --- /pwd: print current workspace path ---
     if text_lower == "/pwd" or text_lower.startswith("/pwd "):
         session = session_manager.get_user_session(open_id)
         ws = session.workspace if session else settings.get_default_workspace()
-        await feishu_client.send_text(open_id, f"📁 当前工作目录：`{ws}`")
+        await reply.text( f"📁 当前工作目录：`{ws}`")
         return
 
 
@@ -1388,7 +1415,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
         files = _scan_workspace_files(ws)
         from app.feishu.cards import build_file_selection_card
         card = build_file_selection_card(ws, files)
-        await feishu_client.send_card(open_id, card)
+        await reply.card( card)
         return
 
     # --- /cd <path>: switch workspace ---
@@ -1399,7 +1426,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
         if len(parts) < 2 or not parts[1].strip():
             session = session_manager.get_user_session(open_id)
             card = _workspace_selection_card(session)
-            await feishu_client.send_card(open_id, card)
+            await reply.card( card)
             return
             
         # 2. 如果带路径参数，直接校验切换
@@ -1433,7 +1460,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
                 claude_md=meta["claude_md"],
                 warning_running=warning_running
             )
-            await feishu_client.send_card(open_id, confirm_card)
+            await reply.card( confirm_card)
             return
                 
         session = session_manager.get_user_session(open_id)
@@ -1456,7 +1483,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
         else:
             pred_text = "\n🆕 **预计关联会话：** 纯净项目 (发送首条消息时自动分配新 Session)"
 
-        await feishu_client.send_text(open_id, f"📁 工作区已切换：`{session.workspace}`{pred_text}")
+        await reply.text( f"📁 工作区已切换：`{session.workspace}`{pred_text}")
 
         ws_config = preferences_manager.load_workspace_config(resolved_workspace)
         if ws_config and ws_config.complete:
@@ -1471,7 +1498,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
                 mode=ws_config.mode,
                 action_type="switch",
             )
-            await feishu_client.send_card(open_id, reuse_card)
+            await reply.card( reuse_card)
         else:
             preferences_manager.clear(open_id)
         return
@@ -1505,7 +1532,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
             cur = ""
         from app.feishu.cards import build_session_selection_card
         card = build_session_selection_card(ws, sessions, current_session_id=cur)
-        await feishu_client.send_card(open_id, card)
+        await reply.card( card)
         return
 
     # --- /resume <session_id>: switch to one exact native session ---
@@ -1545,7 +1572,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
                 open_id,
                 f"🔑 已切换到 Claude Session `{session.claude_session_id}`。",
             )
-            await feishu_client.send_card(open_id, reuse_card)
+            await reply.card( reuse_card)
         else:
             preferences_manager.clear(open_id)
             await feishu_client.send_text(
@@ -1627,7 +1654,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
                 f"📁 工作区: `{session.workspace}`\n"
                 f"{session_line}",
             )
-            await feishu_client.send_card(open_id, reuse_card)
+            await reply.card( reuse_card)
         else:
             preferences_manager.clear(open_id)
             await feishu_client.send_text(
@@ -1648,13 +1675,13 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
                 f"已清理旧会话文件，当前会话: `{session.session_id}`",
             )
         else:
-            await feishu_client.send_text(open_id, "没有活跃会话。")
+            await reply.text( "没有活跃会话。")
         return
 
     # --- /compact: trigger CLI's built-in compact on current session ---
     if text_lower == "/compact":
         if not settings.compact_enabled:
-            await feishu_client.send_text(open_id, "压缩功能已禁用。请联系管理员开启。")
+            await reply.text( "压缩功能已禁用。请联系管理员开启。")
             return
         session = session_manager.get_user_session(open_id)
         if not session or not session.claude_session_id:
@@ -1706,7 +1733,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
                     f"📝 `{workspace}` 的 CLAUDE.md（{char_count} 字符）：\n```\n{preview}```{trunc_note}",
                 )
             except Exception as e:
-                await feishu_client.send_text(open_id, f"读取失败: {e}")
+                await reply.text( f"读取失败: {e}")
             return
 
         # `/mem clear` → wipe memory file
@@ -1722,7 +1749,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
                         open_id, f"`{workspace}` 下没有 CLAUDE.md，无需清空。",
                     )
             except Exception as e:
-                await feishu_client.send_text(open_id, f"清空失败: {e}")
+                await reply.text( f"清空失败: {e}")
             return
 
         # `/mem <text>` → append
@@ -1733,19 +1760,19 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
                 memory_md.write_text(existing + "\n" + content + "\n", "utf-8")
             else:
                 memory_md.write_text(content + "\n", "utf-8")
-            await feishu_client.send_text(open_id, f"已记录到 `{workspace}` 下的 CLAUDE.md")
+            await reply.text( f"已记录到 `{workspace}` 下的 CLAUDE.md")
         except Exception as e:
-            await feishu_client.send_text(open_id, f"写入失败: {e}")
+            await reply.text( f"写入失败: {e}")
     # --- /balance [profile]: query API balance for DeepSeek / GLM ---
     if text_lower == "/balance" or text_lower.startswith("/balance "):
         target_profile = text[8:].strip() or None
         from app.balance import get_profile_balance
         from app.feishu.cards import build_balance_card
 
-        await feishu_client.send_text(open_id, "🔍 正在查询 API 供应商余额...")
+        await reply.text( "🔍 正在查询 API 供应商余额...")
         balance_res = await get_profile_balance(target_profile)
         card = build_balance_card(balance_res)
-        await feishu_client.send_card(open_id, card)
+        await reply.card( card)
         return
 
     # --- /notes: write output or text to notes.md ---
@@ -1833,7 +1860,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
             )
         except Exception as e:
             logger.exception("Failed to write to notes.md")
-            await feishu_client.send_text(open_id, f"❌ 写入 `notes.md` 失败：{e}")
+            await reply.text( f"❌ 写入 `notes.md` 失败：{e}")
         return
 
     # --- /sh <command>: execute shell command in workspace ---
@@ -1858,10 +1885,10 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
             err = _decode_output(stderr).strip()
         except asyncio.TimeoutError:
             _kill_process_tree(proc)
-            await feishu_client.send_text(open_id, f"⏱️ 命令超时(30s): `{cmd}`")
+            await reply.text( f"⏱️ 命令超时(30s): `{cmd}`")
             return
         except Exception as e:
-            await feishu_client.send_text(open_id, f"执行失败: `{e}`")
+            await reply.text( f"执行失败: `{e}`")
             return
         parts = [f"📁 `{workspace}`", f"▶ `{cmd}`"]
         if out:
@@ -1871,11 +1898,11 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str) -> N
             display = err if len(err) <= 1000 else err[:950] + "\n..."
             parts.append(f"⚠️ stderr:\n```\n{display}\n```")
         parts.append(f"退出码: {proc.returncode}")
-        await feishu_client.send_text(open_id, "\n".join(parts))
+        await reply.text( "\n".join(parts))
         return
 
     # --- Default: run Claude CLI ---
-    await _run_claude(text, open_id)
+    await _run_claude(text, open_id, chat_id=chat_id if is_group else "")
 
 
 async def _run_claude(
@@ -1884,6 +1911,7 @@ async def _run_claude(
     session: Session | None = None,
     skip_classify: bool = False,
     resume_session_id: str | None = None,
+    chat_id: str = "",
 ) -> None:
     """Run Claude CLI with optional model selection card for first message.
 
@@ -1975,6 +2003,7 @@ async def _run_claude(
             profile_name=preferences.model,
             claude_session_id=session.claude_session_id or None,
             resume_session_id=resume_session_id,
+            chat_id=chat_id,
         )
         # Auto-heal: if process failed because Session ID does not exist on disk
         err_msg = (agent_result.error or "") + (agent_result.text or "")

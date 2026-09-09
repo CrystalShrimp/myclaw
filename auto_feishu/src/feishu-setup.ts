@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { access, mkdir, open, readFile, writeFile, rm } from "node:fs/promises";
 import { execFileSync, spawn } from "node:child_process";
 import path from "node:path";
 import { stdin as input, stdout as output } from "node:process";
@@ -1919,25 +1919,46 @@ async function waitForLocalClawOnline(ctx: StepContext): Promise<void> {
         const python = process.platform === "win32"
           ? path.join(ctx.config.localServiceRootDir, ".venv", "Scripts", "python.exe")
           : path.join(ctx.config.localServiceRootDir, ".venv", "bin", "python");
-        const executable = await pathExists(python) ? python : "python";
-        const child = spawn(executable, ["-m", "app.main"], {
+        if (!(await pathExists(python))) {
+          throw new Error(
+            "本地 claw 服务无法启动：未找到 " + python +
+            "。请先在项目根目录运行 MyClaw-Setup.bat（或执行 uv sync）完成 Python 环境安装，再重跑 setup.cmd。"
+          );
+        }
+        const bootLogPath = path.join(ctx.config.localServiceRootDir, "logs", "auto_feishu_service_boot.log");
+        await mkdir(path.dirname(bootLogPath), { recursive: true }).catch(() => undefined);
+        const bootLog = await open(bootLogPath, "w").catch(() => null);
+        const child = spawn(python, ["-m", "app.main"], {
           cwd: ctx.config.localServiceRootDir,
           detached: true,
-          stdio: "ignore",
+          stdio: bootLog ? ["ignore", bootLog.fd, bootLog.fd] : "ignore",
           windowsHide: true
         });
         child.unref();
         started = true;
         ctx.logger.info("本地 claw 服务未运行，已尝试启动：" + ctx.config.localServiceRootDir);
+        ctx.logger.info("服务启动日志（若一直未上线请查看）：" + bootLogPath);
       }
     }
     await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  let bootTail = "";
+  try {
+    const bootLogPath = path.join(ctx.config.localServiceRootDir, "logs", "auto_feishu_service_boot.log");
+    if (await pathExists(bootLogPath)) {
+      const content = await readFile(bootLogPath, "utf8");
+      bootTail = content.split("\n").slice(-15).join("\n").trim();
+    }
+  } catch {
+    // 读不到启动日志就只报原始错误
   }
 
   throw new Error(
     "本地 claw 服务未达到可订阅状态：" + lastError
     + "。请确认根目录 .env 已写入 FEISHU_APP_ID/FEISHU_APP_SECRET，然后检查 "
     + url + " 和 myclaw.log。"
+    + (bootTail ? "\n服务启动日志最后几行：\n" + bootTail : "")
   );
 }
 
@@ -2051,9 +2072,11 @@ async function importPermissions(ctx: StepContext): Promise<void> {
   }
 
   const payload = JSON.stringify(rawPermissions, null, 2);
-  const monacoEditor = formRoot.locator(".monaco-editor").first();
+  // 页面存在隐藏的只读 Monaco（common-monaco-editor--readOnly，DOM 顺序在前），
+  // .first() 会瞄准幽灵编辑器：粘贴落空/JSON 损坏/提交按钮禁用。必须按可见性过滤。
+  const monacoEditor = formRoot.locator(".monaco-editor:visible").first();
   const monacoInput = formRoot
-    .locator(".monaco-editor textarea.inputarea, textarea.inputarea, [role='textbox'][aria-roledescription='editor']")
+    .locator(".monaco-editor:visible textarea.inputarea, textarea.inputarea:visible, [role='textbox'][aria-roledescription='editor']:visible")
     .first();
   const editor = await firstVisibleLocator(
     [monacoInput, formRoot.locator("[contenteditable='true']"), formRoot.locator("textarea")],
@@ -2182,9 +2205,11 @@ async function importPermissionsV2(ctx: StepContext): Promise<void> {
   }
 
   const payload = JSON.stringify(rawPermissions, null, 2);
-  const monacoEditor = formRoot.locator(".monaco-editor").first();
+  // 页面存在隐藏的只读 Monaco（common-monaco-editor--readOnly，DOM 顺序在前），
+  // .first() 会瞄准幽灵编辑器：粘贴落空/JSON 损坏/提交按钮禁用。必须按可见性过滤。
+  const monacoEditor = formRoot.locator(".monaco-editor:visible").first();
   const monacoInput = formRoot
-    .locator(".monaco-editor textarea.inputarea, textarea.inputarea, [role='textbox'][aria-roledescription='editor']")
+    .locator(".monaco-editor:visible textarea.inputarea, textarea.inputarea:visible, [role='textbox'][aria-roledescription='editor']:visible")
     .first();
   const editor = await firstVisibleLocator(
     [monacoInput, formRoot.locator("[contenteditable='true']"), formRoot.locator("textarea")],
@@ -2224,58 +2249,60 @@ async function importPermissionsV2(ctx: StepContext): Promise<void> {
   }
 
 
-  const submitAction = await waitForEnabledAction(
-    formRoot,
-    ["\u7533\u8bf7\u5f00\u901a", "\u4e0b\u4e00\u6b65\uff0c\u786e\u8ba4\u65b0\u589e\u6743\u9650", "\u786e\u8ba4\u65b0\u589e\u6743\u9650", "\u4e0b\u4e00\u6b65"],
-    ctx.config.timeoutMs
-  );
-  if (!submitAction) {
-    await manualTakeover(ctx, "\u786e\u8ba4\u6743\u9650\u5bfc\u5165", [
-      "\u8bf7\u624b\u52a8\u70b9\u51fb\u5bfc\u5165\u786e\u8ba4\u6309\u94ae\u3002",
-      "\u7b49\u5f85\u9875\u9762\u51fa\u73b0\u5bfc\u5165\u6210\u529f\u63d0\u793a\u540e\u518d\u7ee7\u7eed\u3002"
-    ]);
-  } else {
-    await submitAction.locator.scrollIntoViewIfNeeded().catch(() => undefined);
-    await submitAction.locator.click({ timeout: ctx.config.timeoutMs, force: true });
-    ctx.logger.debug(`\u5df2\u70b9\u51fb\u6743\u9650\u5bfc\u5165\u6309\u94ae\uff1a${submitAction.text}`);
-    if (submitAction.text.includes("\u7533\u8bf7\u5f00\u901a")) {
-      const confirm = await waitForEnabledAction(ctx.page, ["\u786e\u8ba4"], ctx.config.timeoutMs);
-      if (!confirm) throw new Error("\u7533\u8bf7\u5f00\u901a\u540e\u672a\u627e\u5230\u786e\u8ba4\u6309\u94ae\u3002");
-      await confirm.locator.click({ timeout: ctx.config.timeoutMs });
-    }
+  // \u65b0\u7248\u98de\u4e66\u5bfc\u5165\u4e3a\u4e09\u6bb5\u5f0f\uff1a\u2460\u7c98\u8d34\u2192\u786e\u8ba4\u65b0\u589e\u6743\u9650 \u2461\u914d\u7f6e\u53ef\u8bbf\u95ee\u6570\u636e\u8303\u56f4 \u2462\u786e\u5b9a\u5f00\u901a\u3002
+  // \u7b2c\u4e09\u6bb5\u7684\u5bb9\u5668\u4e0d\u518d\u662f .ud__modal\uff08formRoot \u63a2\u6d4b\u5931\u6548\uff09\uff0c\u5fc5\u987b\u9875\u9762\u7ea7\u641c\u7d22\u6309\u94ae\u3002
+  // \u53e6\uff1a\u7c98\u8d34\u540e\u9700\u8ba9\u7f16\u8f91\u5668\u5931\u7126\u89e6\u53d1\u6821\u9a8c\uff0c\u5426\u5219\u201c\u4e0b\u4e00\u6b65\u201d\u4fdd\u6301\u7981\u7528\u3002
+  const vp = ctx.page.viewportSize();
+  if (vp) {
+    await ctx.page.mouse.click(Math.round(vp.width / 2), 250).catch(() => undefined);
+    await ctx.page.waitForTimeout(1200);
   }
+
+  const clickStageButton = async (texts: string[], scope: "modal" | "page"): Promise<string | null> => {
+    const root = scope === "modal" ? formRoot : ctx.page;
+    for (const t of texts) {
+      const act = await waitForEnabledAction(root, [t], Math.min(ctx.config.timeoutMs, 15000));
+      if (act) {
+        await act.locator.scrollIntoViewIfNeeded().catch(() => undefined);
+        await act.locator.click({ timeout: ctx.config.timeoutMs, force: true });
+        ctx.logger.info(`\u6743\u9650\u5bfc\u5165\u6d41\u7a0b\u5df2\u70b9\u51fb\uff1a${act.text}`);
+        return act.text;
+      }
+    }
+    return null;
+  };
+
+  const stage1 = await clickStageButton(["\u4e0b\u4e00\u6b65\uff0c\u786e\u8ba4\u65b0\u589e\u6743\u9650", "\u4e0b\u4e00\u6b65"], "modal");
+  if (!stage1) {
+    await manualTakeover(ctx, "\u786e\u8ba4\u6743\u9650\u5bfc\u5165", [
+      "\u8bf7\u624b\u52a8\u70b9\u51fb\u201c\u4e0b\u4e00\u6b65\uff0c\u786e\u8ba4\u65b0\u589e\u6743\u9650\u201d\u3002",
+      "\u51fa\u73b0\u540e\u7eed\u6b65\u9aa4\u540e\u518d\u7ee7\u7eed\u3002"
+    ]);
+  }
+  await ctx.page.waitForTimeout(1500);
+
+  // \u7b2c\u4e8c\u6bb5\u53ef\u80fd\u4e0d\u5b58\u5728\uff08\u65e7\u7248 UI \u76f4\u63a5\u8fdb\u5165\u672b\u6bb5\uff09\uff0c\u70b9\u4e0d\u5230\u5c31\u8df3\u8fc7
+  await clickStageButton(["\u4e0b\u4e00\u6b65\uff0c\u914d\u7f6e\u53ef\u8bbf\u95ee\u6570\u636e\u8303\u56f4"], "modal");
+  await ctx.page.waitForTimeout(1500);
+
+  // \u7b2c\u4e09\u6bb5\uff1a\u786e\u5b9a\u5f00\u901a\uff08\u5bb9\u5668\u5df2\u53d8\uff0c\u9875\u9762\u7ea7\u641c\u7d22\u53ef\u89c1\u6309\u94ae\uff09
+  const finalClick = await clickStageButton(["\u786e\u5b9a\u5f00\u901a", "\u786e\u8ba4\u5f00\u901a", "\u7533\u8bf7\u5f00\u901a", "\u786e\u8ba4", "\u786e\u5b9a"], "page");
+  if (!finalClick) {
+    ctx.logger.warn("\u672a\u627e\u5230\u201c\u786e\u5b9a\u5f00\u901a\u201d\u7c7b\u6309\u94ae\uff0c\u6743\u9650\u53ef\u80fd\u5df2\u5728\u6b64\u524d\u751f\u6548\u3002");
+  }
+  await ctx.page.waitForTimeout(2500);
 
   let success = await waitForAnyText(
     ctx.page,
-    ["\u5bfc\u5165\u6210\u529f", "\u5df2\u5bfc\u5165", "\u6743\u9650\u5df2\u66f4\u65b0", "\u5bfc\u5165\u5b8c\u6210"],
+    ["\u5f00\u901a\u6210\u529f", "\u5bfc\u5165\u6210\u529f", "\u5df2\u5bfc\u5165", "\u6743\u9650\u5df2\u66f4\u65b0", "\u5bfc\u5165\u5b8c\u6210"],
     Math.min(ctx.config.timeoutMs, 10000)
   );
   if (!success) {
-    const applySubmit = await waitForEnabledAction(formRoot, ["\u7533\u8bf7\u5f00\u901a"], Math.min(ctx.config.timeoutMs, 8000));
-    if (applySubmit) {
-      await applySubmit.locator.scrollIntoViewIfNeeded().catch(() => undefined);
-      await applySubmit.locator.click({ timeout: ctx.config.timeoutMs, force: true });
-
-      const confirmEnable = await waitForEnabledAction(ctx.page, ["\u786e\u8ba4\u5f00\u542f", "\u5f00\u542f"], Math.min(ctx.config.timeoutMs, 5000));
-      if (confirmEnable) {
-        await confirmEnable.locator.click({ timeout: ctx.config.timeoutMs, force: true });
-      }
-
-      success = await waitForAnyText(
-        ctx.page,
-        [
-          "\u786e\u8ba4\u5f00\u542f\u6210\u529f",
-          "\u5f00\u542f\u6210\u529f",
-          "\u7533\u8bf7\u5f00\u901a\u6210\u529f",
-          "\u7533\u8bf7\u5df2\u63d0\u4ea4",
-          "\u63d0\u4ea4\u6210\u529f",
-          "\u5bfc\u5165\u6210\u529f",
-          "\u5df2\u5bfc\u5165",
-          "\u6743\u9650\u5df2\u66f4\u65b0",
-          "\u5bfc\u5165\u5b8c\u6210"
-        ],
-        ctx.config.timeoutMs
-      );
+    // \u6743\u5a01\u6821\u9a8c\uff1a\u7a7a\u5217\u8868\u63d0\u793a\u6d88\u5931\u5373\u89c6\u4e3a\u5bfc\u5165\u751f\u6548\uff08\u6bd4\u6210\u529f toast \u66f4\u53ef\u9760\uff09
+    const stillEmpty = await waitForAnyText(ctx.page, ["\u6682\u672a\u5f00\u901a\u4efb\u4f55\u6743\u9650"], 3000);
+    if (!stillEmpty) {
+      success = "\u6743\u9650\u5217\u8868\u5df2\u66f4\u65b0";
+      ctx.logger.info("\u68c0\u6d4b\u5230\u6743\u9650\u5217\u8868\u5df2\u975e\u7a7a\uff0c\u5bfc\u5165\u89c6\u4e3a\u6210\u529f\u3002");
     }
   }
 
@@ -2313,6 +2340,68 @@ async function enableBotCapability(ctx: StepContext): Promise<void> {
 
   ctx.logger.info("机器人能力已启用，名称继承应用名称。");
   ctx.result.botEnabled = true;
+}
+
+// ===== 线上活体校验 =====
+// result.json 里的 permissionsImported / eventSubscriptionConfigured 只是历史快照，
+// 后台任何手动改动都不会使其失效。跳过决策必须基于当前线上状态，而不是缓存标志。
+
+async function verifyPermissionsLive(ctx: StepContext): Promise<{ ok: boolean; detail: string }> {
+  if (!ctx.result.appId) return { ok: false, detail: "无 App ID" };
+  try {
+    const url = `https://open.feishu.cn/app/${ctx.result.appId}/auth`;
+    await ctx.page.goto(url, { waitUntil: "domcontentloaded", timeout: ctx.config.timeoutMs });
+    await ctx.page.waitForTimeout(4000);
+    const body = await ctx.page.locator("body").innerText().catch(() => "");
+    const empty = body.includes("暂未开通任何权限");
+    return { ok: !empty, detail: empty ? "权限列表为空（暂未开通任何权限）" : "" };
+  } catch (e) {
+    return { ok: false, detail: `权限页无法打开：${e}` };
+  }
+}
+
+async function verifyEventSubscriptionLive(ctx: StepContext): Promise<{ ok: boolean; detail: string }> {
+  if (!ctx.result.appId) return { ok: false, detail: "无 App ID" };
+  try {
+    const url = `https://open.feishu.cn/app/${ctx.result.appId}/event`;
+    await ctx.page.goto(url, { waitUntil: "domcontentloaded", timeout: ctx.config.timeoutMs });
+    await ctx.page.waitForTimeout(4000);
+    const body = await ctx.page.locator("body").innerText().catch(() => "");
+    const failed: string[] = [];
+    if (!body.includes("长连接")) failed.push("订阅方式不是长连接");
+    if (!body.includes("im.message.receive_v1")) failed.push("缺事件 im.message.receive_v1");
+    if (body.includes("请开通以下任一权限")) failed.push("消息事件所需权限未开通");
+
+    // 回调配置页签单独校验 card.action.trigger（不同页签，需点击切换）
+    let callbackOk = false;
+    try {
+      const tab = ctx.page.getByText("回调配置", { exact: true }).first();
+      if (await tab.isVisible({ timeout: 3000 })) {
+        await tab.click({ timeout: 5000 });
+        await ctx.page.waitForTimeout(2500);
+        const b2 = await ctx.page.locator("body").innerText().catch(() => "");
+        callbackOk = b2.includes("card.action.trigger");
+      }
+    } catch {
+      // 页签点不到视为未配置
+    }
+    if (!callbackOk) failed.push("缺回调 card.action.trigger");
+
+    // 校验完切回“事件配置”页签：configureEventSubscription 的默认起始页签是它，
+    // 停留在回调页签会让后续“添加事件”找不到按钮。
+    try {
+      const backTab = ctx.page.getByText("事件配置", { exact: true }).first();
+      if (await backTab.isVisible({ timeout: 2000 })) {
+        await backTab.click({ timeout: 4000 }).catch(() => undefined);
+        await ctx.page.waitForTimeout(1500);
+      }
+    } catch {
+      // 切不回则由后续步骤自行处理
+    }
+    return { ok: failed.length === 0, detail: failed.join("；") };
+  } catch (e) {
+    return { ok: false, detail: `事件页无法打开：${e}` };
+  }
 }
 
 async function configureEventSubscription(ctx: StepContext): Promise<void> {
@@ -2490,23 +2579,10 @@ async function publishApp(ctx: StepContext): Promise<void> {
     ]);
   }
 
-  // 发版必要性判断：旧版本"已发布"字样不代表新配置已生效。
-  // 真正的判据是"创建版本"按钮状态：可点=存在未发布变更；禁用且无待申请版本=已全部发布。
+  // 发版必要性判断：不做"已发布就跳过"的提前返回——旧版本发布时不一定带上了
+  // 表单内的最新选项（如"允许机器人被添加到外部群中使用"），已发布状态下
+  // "创建版本"按钮通常仍可点击，重发一版即可让选项生效。
   const hasPendingVersion = await waitForAnyText(ctx.page, ["待申请"], 2000);
-  const createBtnRegex = /创建版本|新建版本|发布版本|创建并发布/;
-  const createBtnCount = await ctx.page.getByRole("button", { name: createBtnRegex }).count().catch(() => 0);
-  let createDisabled = false;
-  if (createBtnCount > 0) {
-    const createBtn = ctx.page.getByRole("button", { name: createBtnRegex }).first();
-    createDisabled =
-      (await createBtn.getAttribute("disabled").catch(() => null)) !== null ||
-      await createBtn.isDisabled().catch(() => false);
-  }
-  if (createDisabled && !hasPendingVersion) {
-    ctx.logger.info("“创建版本”按钮禁用且无待申请版本：当前配置已全部发布，跳过发版。");
-    ctx.result.published = true;
-    return;
-  }
 
   // 已存在"待申请"版本时，"创建版本"按钮会被禁用，发布表单在"查看版本详情"里。
   let enteredForm: string | null = null;
@@ -2523,10 +2599,13 @@ async function publishApp(ctx: StepContext): Promise<void> {
     );
   }
   if (!enteredForm) {
-    await manualTakeover(ctx, "创建版本", [
-      "请手动点击“创建版本”或“查看版本详情”。",
-      "版本表单出现后再继续。"
-    ]);
+    // 两条入口都进不去（已全部发布且创建按钮真被禁用）。外部群开关等表单内
+    // 选项在此状态下无法自动修改——仅提醒，不中断整个流程。
+    ctx.logger.warn(
+      "无法进入发版表单（已全部发布且“创建版本”不可用）。若“允许机器人被添加到外部群中使用”尚未开启，请检查账号是否实名验证，或手动创建版本启用。"
+    );
+    ctx.result.published = true;
+    return;
   }
 
   const versionDescription = "自动化初始化配置";
@@ -2566,6 +2645,37 @@ async function publishApp(ctx: StepContext): Promise<void> {
   }
   ctx.logger.info("应用可用范围已设置为全员：" + finalAvailability);
 
+  // 尝试勾选“允许机器人被添加到外部群中使用”（群聊使用的前提之一）。
+  // 该选项依赖账号实名状态：勾不动/不存在时仅提醒，绝不阻断发布流程。
+  try {
+    const extGroupLabel = ctx.page
+      .locator(".ud__checkbox__label-content", { hasText: "允许机器人被添加到外部群中使用" })
+      .first();
+    const labelVisible = await extGroupLabel.isVisible({ timeout: 3000 }).catch(() => false);
+    if (!labelVisible) {
+      ctx.logger.info("未找到“允许机器人被添加到外部群中使用”选项（随账号/版本状态隐藏），跳过。");
+    } else {
+      const box = extGroupLabel.locator("xpath=ancestor::*[contains(@class,'ud__checkbox')][1]");
+      const input = box.locator("input[type='checkbox']").first();
+      const already = await input.isChecked().catch(() => false);
+      if (already) {
+        ctx.logger.info("“允许机器人被添加到外部群中使用”已勾选。");
+      } else {
+        await input.check({ timeout: 3000 }).catch(async () => {
+          await extGroupLabel.click({ timeout: 3000 }).catch(() => undefined);
+        });
+        const now = await input.isChecked().catch(() => false);
+        if (now) {
+          ctx.logger.info("已勾选“允许机器人被添加到外部群中使用”。");
+        } else {
+          ctx.logger.warn("“允许机器人被添加到外部群中使用”无法勾选，请检查账号是否实名验证。");
+        }
+      }
+    }
+  } catch {
+    ctx.logger.warn("“允许机器人被添加到外部群中使用”处理异常，请检查账号是否实名验证。");
+  }
+
   // "保存"只存在于"创建新版本"表单；待申请版本的详情页直接提供"确认发布"。
   const saveVersion = await waitForEnabledAction(ctx.page, ["保存"], Math.min(ctx.config.timeoutMs, 8000));
   if (saveVersion) {
@@ -2573,6 +2683,31 @@ async function publishApp(ctx: StepContext): Promise<void> {
     ctx.logger.info("已点击“保存”。");
   } else {
     ctx.logger.info("未找到“保存”按钮（待申请版本详情页），直接进入“确认发布”。");
+  }
+
+  // 保存后飞书可能弹出确认对话框（ud__dialog），不处理会拦截后续“确认发布”的点击。
+  await ctx.page.waitForTimeout(1000);
+  const postSaveDialog = await findVisibleModal(ctx.page, 4000);
+  if (postSaveDialog) {
+    ctx.logger.info("保存后检测到弹窗，优先处理弹窗内的确认动作...");
+    const dialogConfirm = await waitForEnabledAction(
+      postSaveDialog,
+      ["确认发布", "确认", "确定", "知道了", "继续发布"],
+      Math.min(ctx.config.timeoutMs, 8000)
+    );
+    if (dialogConfirm) {
+      await dialogConfirm.locator.click({ timeout: Math.min(ctx.config.timeoutMs, 10000) }).catch(() => undefined);
+      ctx.logger.info("已点击弹窗内的确认按钮：" + dialogConfirm.text);
+    } else {
+      // 信息型弹窗：关闭后再继续页面上的“确认发布”
+      const closer = await waitForEnabledAction(postSaveDialog, ["取消", "关闭"], 3000);
+      if (closer) {
+        await closer.locator.click({ timeout: 3000 }).catch(() => undefined);
+      } else {
+        await ctx.page.keyboard.press("Escape").catch(() => undefined);
+      }
+    }
+    await ctx.page.waitForTimeout(1200);
   }
 
   const shouldPublish = isNonInteractivePrompt()
@@ -2585,9 +2720,13 @@ async function publishApp(ctx: StepContext): Promise<void> {
     return;
   }
 
-  const confirmPublish = await waitForEnabledAction(ctx.page, ["确认发布"], ctx.config.timeoutMs);
-  if (!confirmPublish) throw new Error("保存版本后未找到确认发布按钮。");
-  await confirmPublish.locator.click({ timeout: ctx.config.timeoutMs });
+  // 弹窗内的确认可能已直接触发发布 → 先查成功状态，未成功才点页面上的“确认发布”。
+  const alreadyPublished = await waitForAnyText(ctx.page, ["已发布", "发布成功", "审核中", "已提交"], 3000);
+  if (!alreadyPublished) {
+    const confirmPublish = await waitForEnabledAction(ctx.page, ["确认发布"], ctx.config.timeoutMs);
+    if (!confirmPublish) throw new Error("保存版本后未找到确认发布按钮。");
+    await confirmPublish.locator.click({ timeout: ctx.config.timeoutMs });
+  }
 
   const success = await waitForAnyText(ctx.page, ["已发布", "发布成功", "审核中", "已提交"], ctx.config.timeoutMs);
   if (!success) throw new Error("版本提交后未检测到发布成功状态。");
@@ -2828,12 +2967,16 @@ async function mainV2(): Promise<void> {
       }
     });
 
-    if (!ctx.result.permissionsImported) {
+    // 跳过决策基于线上活体校验，不信任 result.json 的历史标志：
+    // 后台手动改动（权限关闭/事件退订）不会使缓存标志失效。
+    const permLive = await verifyPermissionsLive(ctx);
+    if (!permLive.ok) {
+      logger.info(`线上校验：飞书权限异常（${permLive.detail || "未通过"}），执行导入...`);
       await executeStep(ctx, "导入飞书权限", async () => {
         await importPermissionsV2(ctx);
       });
     } else {
-      logger.info("续跑：飞书权限已导入，跳过。");
+      logger.info("线上校验：飞书权限已开通，跳过导入。");
     }
 
     if (!ctx.result.botEnabled) {
@@ -2844,12 +2987,16 @@ async function mainV2(): Promise<void> {
       logger.info("续跑：机器人能力已启用，跳过。");
     }
 
-    if (config.enableEventSubscription && !ctx.result.eventSubscriptionConfigured) {
-      await executeStep(ctx, "配置 WebSocket 事件订阅", async () => {
-        await configureEventSubscription(ctx);
-      });
-    } else if (ctx.result.eventSubscriptionConfigured) {
-      logger.info("续跑：WebSocket 事件已订阅，跳过。");
+    if (config.enableEventSubscription) {
+      const evLive = await verifyEventSubscriptionLive(ctx);
+      if (!evLive.ok) {
+        logger.info(`线上校验：事件订阅异常（${evLive.detail || "未全部通过"}），执行配置...`);
+        await executeStep(ctx, "配置 WebSocket 事件订阅", async () => {
+          await configureEventSubscription(ctx);
+        });
+      } else {
+        logger.info("线上校验：事件订阅与回调均在线，跳过配置。");
+      }
     }
 
     if (config.publishAfterSetup && !ctx.result.published) {

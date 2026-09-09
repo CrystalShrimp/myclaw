@@ -168,29 +168,16 @@ if exist "config\settings_%ACTIVE_PROFILE%.json" (
 )
 
 echo [!] 尚未配置模型供应商 (没有 API Key 机器人无法对话)。
-echo     1. 智谱 GLM      (open.bigmodel.cn)
-echo     2. DeepSeek      (platform.deepseek.com)
-echo     3. Kimi 月之暗面  (platform.moonshot.cn)
-set /p PROVIDER_CHOICE="[?] 请选择供应商编号并回车 (1/2/3，直接回车跳过): "
-if "%PROVIDER_CHOICE%"=="1" set PROVIDER_NAME=glm
-if "%PROVIDER_CHOICE%"=="2" set PROVIDER_NAME=deepseek
-if "%PROVIDER_CHOICE%"=="3" set PROVIDER_NAME=kimi
-if not defined PROVIDER_NAME (
-    echo [-] 未选择，跳过供应商配置（之后可重跑本脚本或手工复制 examples 模板到 config）。
-    goto FINISH
-)
-set MYCLAW_PROVIDER=%PROVIDER_NAME%
 if not exist ".venv\Scripts\python.exe" (
     echo [ERROR] .venv 不存在，无法写入配置。请先完成第 2 步 Python 环境安装。
     pause
     exit /b 1
 )
-REM Key 由 python 端 input() 交互读取（bat 的 set /p 对粘贴不可靠）
+REM 供应商向导：预置三家 + 自定义（名称/地址/Key/三档模型，回车=三档同名），
+REM 可连续配置多个，结束时选择当前生效供应商。输入交互全部由 python 端处理。
 ".venv\Scripts\python.exe" "scripts\setup_provider.py"
-set "MYCLAW_PROVIDER="
-set "PROVIDER_NAME="
 if errorlevel 1 (
-    echo [ERROR] 供应商配置写入失败。
+    echo [ERROR] 供应商配置失败。
     pause
     exit /b 1
 )

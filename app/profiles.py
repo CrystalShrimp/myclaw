@@ -47,7 +47,8 @@ def discover_profiles() -> dict[str, dict]:
             data = json.loads(f.read_text("utf-8"))
             base_url = data.get("env", {}).get("ANTHROPIC_BASE_URL", "")
             model = data.get("model", "")
-            label = PROFILE_LABELS.get(name, name)
+            # profile 内嵌 label 优先（自定义供应商可写中文名），否则回落到预置表
+            label = data.get("label") or PROFILE_LABELS.get(name, name)
             profiles[name] = {
                 "name": name,
                 "label": label,

@@ -2360,6 +2360,25 @@ async function verifyPermissionsLive(ctx: StepContext): Promise<{ ok: boolean; d
   }
 }
 
+async function verifyPublishLive(ctx: StepContext): Promise<{ ok: boolean; detail: string }> {
+  // ok=true 表示"无待发布修改"可跳过发版；ok=false 表示后台挂着
+  // "版本发布后，当前修改方可生效"提示（如重新添加的事件还没随版本生效）。
+  if (!ctx.result.appId) return { ok: false, detail: "无 App ID" };
+  try {
+    const url = `https://open.feishu.cn/app/${ctx.result.appId}/baseinfo`;
+    await ctx.page.goto(url, { waitUntil: "domcontentloaded", timeout: ctx.config.timeoutMs });
+    await ctx.page.waitForTimeout(4000);
+    const body = await ctx.page.locator("body").innerText().catch(() => "");
+    if (body.includes("版本发布后，当前修改方可生效")) {
+      return { ok: false, detail: "存在未发布的修改（版本发布后方可生效）" };
+    }
+    return { ok: true, detail: "" };
+  } catch (e) {
+    // 页面打不开时不冒险跳过——交由发版流程自行处理
+    return { ok: false, detail: `基础信息页无法打开：${e}` };
+  }
+}
+
 async function verifyEventSubscriptionLive(ctx: StepContext): Promise<{ ok: boolean; detail: string }> {
   if (!ctx.result.appId) return { ok: false, detail: "无 App ID" };
   try {
@@ -2999,12 +3018,17 @@ async function mainV2(): Promise<void> {
       }
     }
 
-    if (config.publishAfterSetup && !ctx.result.published) {
-      await executeStep(ctx, "创建并发布飞书应用版本", async () => {
-        await publishApp(ctx);
-      });
-    } else if (ctx.result.published) {
-      logger.info("续跑：飞书应用版本已发布，跳过。");
+    if (config.publishAfterSetup) {
+      const pubLive = await verifyPublishLive(ctx);
+      if (!pubLive.ok) {
+        logger.info(`线上校验：${pubLive.detail}，执行发版...`);
+        await executeStep(ctx, "创建并发布飞书应用版本", async () => {
+          await publishApp(ctx);
+        });
+      } else {
+        ctx.result.published = true;
+        logger.info("线上校验：无待发布修改，跳过发版。");
+      }
     }
 
     if (ctx.result.published && ctx.result.appId && ctx.runtimeAppSecret) {

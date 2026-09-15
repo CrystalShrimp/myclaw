@@ -258,6 +258,10 @@ class ClaudeCLILoop:
         self._stdin_writers: dict[str, asyncio.StreamWriter] = {}
         # open_id -> 群聊 chat_id（空 = 私聊）。崩溃告警等后续发送用它路由。
         self._chat_targets: dict[str, str] = {}
+        # 会话 key -> 真实 open_id。key 是"群=chat_id / 私聊=p:open_id"（私聊与
+        # 群聊进程/记忆完全隔离），但进度卡片、审批卡片、崩溃私聊告警仍要发给
+        # 真实的 open_id，查这张表还原。
+        self._owners: dict[str, str] = {}
         # list of (future, msg_state) — one entry per pending message
         self._response_futures: dict[str, list[tuple[asyncio.Future, dict]]] = {}
         self._reader_tasks: dict[str, asyncio.Task] = {}
@@ -297,8 +301,10 @@ class ClaudeCLILoop:
 
     def get_session_id_for_user(self, open_id: str) -> str | None:
         """Get the Claude session_id for a currently running user process."""
+        # registry 里存的是真实 open_id；入参可能是会话 key，两边都试。
+        owner = self._owners.get(open_id, open_id)
         for claude_sid, info in session_registry.items():
-            if info.get("open_id") == open_id:
+            if info.get("open_id") in (open_id, owner):
                 return claude_sid
         return None
 
@@ -313,8 +319,13 @@ class ClaudeCLILoop:
         claude_session_id: str | None = None,
         resume_session_id: str | None = None,
         chat_id: str = "",
+        owner_open_id: str = "",
     ) -> AgentResult:
         """Send a prompt to the user's interactive Claude process.
+
+        *open_id* 在这里是"会话 key"（群=chat_id / 私聊=p:open_id），私聊与
+        群聊各起各的进程互不串台；*owner_open_id* 是真实 open_id，用于把
+        进度卡片 / 审批 / 崩溃告警发到用户私聊。
 
         Starts the process on first call (or after a crash).  Session
         handling uses claude's native flags:
@@ -369,12 +380,13 @@ class ClaudeCLILoop:
             # Create the single progress card (running state, empty body).
             # 群聊发起的任务，进度卡片发回群里（chat_id 路由）。
             self._chat_targets[open_id] = chat_id
+            self._owners[open_id] = owner_open_id or open_id
             try:
                 card = build_progress_card(chosen, "running")
                 if chat_id:
                     card_msg = await feishu_client.send_card(chat_id, card, is_chat=True)
                 else:
-                    card_msg = await feishu_client.send_card(open_id, card)
+                    card_msg = await feishu_client.send_card(self._owners[open_id], card)
                 msg_state["card_id"] = card_msg.get("data", {}).get("message_id", "")
             except Exception as e:
                 logger.warning("Failed to create progress card: %s", e)
@@ -440,6 +452,7 @@ class ClaudeCLILoop:
             task.cancel()
 
         self._stdin_writers.pop(open_id, None)
+        self._owners.pop(open_id, None)
 
         if proc and proc.returncode is None:
             _kill_process_tree(proc)
@@ -643,8 +656,12 @@ class ClaudeCLILoop:
                     claude_sid = event.get("session_id", "")
                     if claude_sid:
                         session_registry[claude_sid] = {
-                            "open_id": open_id,
+                            "open_id": self._owners.get(open_id, open_id),
                             "approval_mode": approval_mode,
+                            "chat_id": self._chat_targets.get(open_id, ""),
+                            # 进程/状态表按会话 key（g:群:人 / p:人）注册，
+                            # hooks 拒绝后取消进程必须用同一个 key
+                            "skey": open_id,
                         }
                     model = event.get("model", model)
                     if msg_state:
@@ -765,7 +782,7 @@ class ClaudeCLILoop:
                 else:
                     asyncio.create_task(
                         feishu_client.send_text(
-                            open_id,
+                            self._owners.get(open_id, open_id),
                             f"🚨 **Claude 运行进程异常退出** 🚨\n"
                             f"退出状态码: `{exit_code}`\n"
                             f"错误详情:\n```\n{reason[:1000]}\n```\n"
@@ -895,9 +912,11 @@ class ClaudeCLILoop:
         self._stdin_writers.pop(open_id, None)
         self._reader_tasks.pop(open_id, None)
         # Clean up session_registry entries for this user
+        # （registry 存真实 open_id，入参是会话 key，两边都清）
+        owner = self._owners.pop(open_id, open_id)
         stale_sids = [
             sid for sid, info in session_registry.items()
-            if info.get("open_id") == open_id
+            if info.get("open_id") in (open_id, owner)
         ]
         for sid in stale_sids:
             del session_registry[sid]

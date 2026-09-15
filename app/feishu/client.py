@@ -21,7 +21,31 @@ class FeishuClient:
         self._app_id = settings.feishu_app_id
         self._app_secret = settings.feishu_app_secret
         self._tenant_access_token: str = ""
+        self._bot_open_id: str = ""
         self._http = httpx.AsyncClient(timeout=30.0)
+
+    @property
+    def bot_open_id(self) -> str:
+        return self._bot_open_id
+
+    async def fetch_bot_open_id(self) -> str:
+        """Fetch and cache the bot's own open_id via GET /bot/v3/info."""
+        if self._bot_open_id:
+            return self._bot_open_id
+        headers = await self._api_headers()
+        resp = await self._http.get(f"{API_BASE}/bot/v3/info", headers=headers)
+        data = resp.json()
+        # 该接口正常返回 {"code":0,"bot":{"open_id":"ou_..."}}；老版本可能无 code 字段
+        if data.get("code") not in (0, None):
+            logger.error("fetch_bot_open_id failed: %s", data)
+            return ""
+        open_id = (data.get("bot") or {}).get("open_id", "")
+        if not open_id:
+            logger.error("fetch_bot_open_id: no open_id in response: %s", data)
+            return ""
+        self._bot_open_id = open_id
+        logger.info("Bot open_id resolved: %s", open_id)
+        return open_id
 
     async def _ensure_token(self) -> str:
         if self._tenant_access_token:

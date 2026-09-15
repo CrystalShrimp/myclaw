@@ -135,6 +135,8 @@ async def pre_tool_use(request: Request) -> dict:
 
     open_id = reg["open_id"]
     mode = reg.get("approval_mode", "m")  # 'h' = high risk (strict), 'm' = medium (balanced), 'l' = low risk (auto)
+    # 群任务的高风险工具审批卡片必须发回群里，不能泄进发起人私聊
+    reg_chat_id = reg.get("chat_id", "")
 
     # --- Mode l (⚡ 全自动模式 / Low Risk Auto): 100% 自动放行一切工具（包含 Edit, Write, Bash） ---
     if mode == "l":
@@ -162,7 +164,12 @@ async def pre_tool_use(request: Request) -> dict:
             session_id=claude_session_id,
         )
         try:
-            result = await feishu_client.send_card(open_id, card)
+            if reg_chat_id:
+                from app.feishu.cards import stamp_card_chat
+                stamp_card_chat(card, reg_chat_id)
+                result = await feishu_client.send_card(reg_chat_id, card, is_chat=True)
+            else:
+                result = await feishu_client.send_card(open_id, card)
             _hook_log.append(f"→ CARD SENT ok, msg_id={result.get('data', {}).get('message_id', '?')}")
         except Exception as e:
             _hook_log.append(f"→ CARD SEND FAILED: {e}")
@@ -177,12 +184,14 @@ async def pre_tool_use(request: Request) -> dict:
         risk_level="high" if actual_high_risk else "low",
         send_card_fn=_send_card,
         open_id=open_id,
+        chat_id=reg_chat_id,
     )
 
     if not approved:
         logger.warning("Tool approval denied/expired for user %s, cancelling CLI loop to prevent retry spam.", open_id)
         from app.agent.cli_loop import claude_cli_loop
-        claude_cli_loop.cancel_by_user(open_id)
+        # 进程按会话 key 注册（g:群:人 / p:人），必须用同一 key 取消
+        claude_cli_loop.cancel_by_user(reg.get("skey") or open_id)
 
     decision = "allow" if approved else "deny"
     reason = "用户已批准" if approved else "用户已拒绝"

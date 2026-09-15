@@ -97,6 +97,17 @@ async def lifespan(app: FastAPI):
     ws_client.start_async()
     logger.info("Feishu WS client connecting...")
 
+    # 群聊"仅 @ 响应"门槛需要机器人自身 open_id 来比对 mentions
+    try:
+        if await feishu_client.fetch_bot_open_id():
+            logger.info("Group messages gated on @bot mention")
+        else:
+            logger.warning(
+                "Bot open_id unavailable; group @-gate falls back to any-mention check"
+            )
+    except Exception as e:
+        logger.warning("Failed to fetch bot open_id: %s", e)
+
     # Profiles are selected per Feishu user and persisted outside Claude sessions.
     from app.profiles import discover_profiles
     profiles = discover_profiles()

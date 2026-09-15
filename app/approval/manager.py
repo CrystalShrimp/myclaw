@@ -18,6 +18,7 @@ class ApprovalManager:
         self._callbacks: dict[str, asyncio.Future[bool]] = {}
         self._switch_models: dict[str, str] = {}  # approval_id -> switched model
         self._approval_users: dict[str, str] = {}  # approval_id -> open_id
+        self._approval_chats: dict[str, str] = {}  # approval_id -> 群 chat_id（空=私聊）
 
     def request_approval(
         self,
@@ -58,6 +59,7 @@ class ApprovalManager:
         risk_level: RiskLevel,
         send_card_fn,  # async Callable(approval_id: str) -> None
         open_id: str = "",
+        chat_id: str = "",
     ) -> bool:
         """Request approval for a tool execution.
 
@@ -67,6 +69,7 @@ class ApprovalManager:
             risk_level: Risk level of the tool.
             send_card_fn: Async function that sends the approval card.
             open_id: User's open_id for expiry notifications.
+            chat_id: 群 chat_id；超时通知发回原会话，空 = 私聊。
 
         Returns:
             True if approved, False if rejected/expired.
@@ -92,6 +95,8 @@ class ApprovalManager:
 
         if open_id:
             self._approval_users[approval_id] = open_id
+        if chat_id:
+            self._approval_chats[approval_id] = chat_id
 
         loop = asyncio.get_event_loop()
         loop.create_task(self._expire_after(approval_id, settings.tool_approval_timeout))
@@ -169,13 +174,15 @@ class ApprovalManager:
             try:
                 from app.feishu.client import feishu_client
                 open_id = self._approval_users.get(approval_id, "")
-                if open_id:
-                    cmd_summary = request.command.command[:80]
-                    await feishu_client.send_text(
-                        open_id,
-                        f"⏱️ 审批超时未处理，任务已自动拒绝并停止。\n"
-                        f"指令：`{cmd_summary}`",
-                    )
+                chat_id = self._approval_chats.get(approval_id, "")
+                msg = (
+                    f"⏱️ 审批超时未处理，任务已自动拒绝并停止。\n"
+                    f"指令：`{request.command.command[:80]}`"
+                )
+                if chat_id:
+                    await feishu_client.send_text(chat_id, msg, is_chat=True)
+                elif open_id:
+                    await feishu_client.send_text(open_id, msg)
             except Exception:
                 pass
         self.cleanup(approval_id)
@@ -184,6 +191,7 @@ class ApprovalManager:
         self._pending.pop(approval_id, None)
         self._callbacks.pop(approval_id, None)
         self._approval_users.pop(approval_id, None)
+        self._approval_chats.pop(approval_id, None)
 
     def set_switch_model(self, approval_id: str, model: str) -> None:
         """Store a model switch decision for a model selection card."""

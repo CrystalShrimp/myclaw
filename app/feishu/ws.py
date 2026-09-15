@@ -124,6 +124,12 @@ class FeishuWsClient(_BaseClient):
             "WS frame: type=%s, msg_id=%s, payload_len=%d",
             message_type.value, msg_id, len(pl) if pl else 0,
         )
+        # 卡片回调的原始字段是路由诊断的关键证据（context 是否带 open_chat_id）
+        if message_type == MessageType.CARD and pl:
+            logger.info(
+                "CARD raw payload: %s",
+                bytes(pl[:800]).decode("utf-8", errors="replace"),
+            )
 
         resp = Response(code=http.HTTPStatus.OK)
         try:

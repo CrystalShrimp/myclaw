@@ -122,6 +122,24 @@ def load_profile_env(name: str) -> dict[str, str]:
         return {}
 
 
+def profile_level_models(name: str) -> dict[str, str]:
+    """一个 profile 的 档位 -> 实际模型 id 映射（模型选择卡展示用）。
+
+    Returns: {"haiku": "...", "sonnet": "...", "opus": "..."}；profile
+    缺失或未配置某档位时该档位缺省。
+    """
+    env = load_profile_env(name)
+    return {
+        level: env[key]
+        for level, key in (
+            ("haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
+            ("sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL"),
+            ("opus", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
+        )
+        if env.get(key)
+    }
+
+
 def load_active_profile_env() -> dict[str, str]:
     """Return env vars for the active profile, for claude subprocess injection.
 

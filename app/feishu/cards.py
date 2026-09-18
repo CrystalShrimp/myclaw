@@ -46,11 +46,21 @@ def build_model_selection_card(
     prompt: str = "",
     default_model: str = "sonnet",
     current_model: str = "",
+    models_map: dict | None = None,
 ) -> dict:
-    """模型规格选择卡片 — 让用户选择 haiku / sonnet / opus。"""
+    """模型规格选择卡片 — 让用户选择 haiku / sonnet / opus。
+
+    models_map: 当前供应商 profile 的 {haiku/sonnet/opus: 实际模型 id}，
+    传入时按钮与摘要显示实际模型。
+    """
     active = current_model or default_model or "sonnet"
     model_desc = {"haiku": "Haiku (轻量/快速)", "sonnet": "Sonnet (标准/推荐)", "opus": "Opus (旗舰/最强)"}
     all_models = [("haiku", "secondary"), ("sonnet", "primary"), ("opus", "danger")]
+
+    def _label(code: str) -> str:
+        base = model_desc[code]
+        actual = (models_map or {}).get(code, "")
+        return f"{base} · {actual}" if actual else base
 
     actions = []
     for model_code, btn_type in all_models:
@@ -59,7 +69,7 @@ def build_model_selection_card(
             "tag": "button",
             "text": {
                 "tag": "plain_text",
-                "content": f"{'✓ ' if is_active else ''}{model_desc[model_code]}"
+                "content": f"{'✓ ' if is_active else ''}{_label(model_code)}"
             },
             "type": btn_type if not is_active else "default",
             "value": {
@@ -70,7 +80,7 @@ def build_model_selection_card(
             },
         })
 
-    display_prompt = f"**当前已选：** `{active}`\n"
+    display_prompt = f"**当前已选：** `{_label(active)}`\n"
     if prompt:
         display_prompt += f"**暂存指令：** {prompt[:200]}"
 
@@ -979,7 +989,7 @@ def build_session_selection_card(
             else:
                 ago = f"{int(delta // 86400)}天前"
         marker = " · 当前" if (current_session_id and sid == current_session_id) else ""
-        label = f"{ts_str} ({ago}) · {msg_count}步 · {summary}{marker}"
+        label = f"{summary}{marker} · {ts_str} ({ago})"
         if len(label) > 100:
             label = label[:97] + "..."
         options.append({
@@ -1060,7 +1070,8 @@ def build_help_card() -> dict:
         "**⚙️ 厂家与模型设置**\n"
         "- `/provider [profile]` : 切换模型供应商/厂家 (如 zhipu, deepseek, anthropic)\n"
         "- `/model [haiku|sonnet|opus]` : 切换模型规格/等级 (同 `/level`)\n"
-        "- `/mode [h|m|l]` : 切换审批模式 (`h` 严格全审批 / `m` 只读放行写入审批 / `l` 全自动放行)\n\n"
+        "- `/mode [h|m|l]` : 切换审批模式 (`h` 严格全审批 / `m` 只读放行写入审批 / `l` 全自动放行)\n"
+        "- `/effort [low|medium|high|xhigh|max]` : 切换思考力度 (`default` 恢复 CLI 默认)\n\n"
         "**📁 工作区与文件管理**\n"
         "- `/pwd` : 查看当前关联的项目工作区绝对路径\n"
         "- `/cd [path]` : 切换或新建工作区 (不带路径则弹出交互选择卡片)\n"

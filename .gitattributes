@@ -1,0 +1,7 @@
+# Windows 脚本必须 CRLF（cmd 解析 LF 批处理会在多字节字符中错切命令）
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+# macOS/Unix 脚本必须 LF
+*.sh text eol=lf
+*.command text eol=lf

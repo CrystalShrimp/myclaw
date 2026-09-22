@@ -22,18 +22,24 @@ EXAMPLES_DIR = ROOT / "examples"
 
 PRESETS = {
     "1": {
+        "name": "claude",
+        "label": "Claude (Anthropic 官方)",
+        "site": "api.anthropic.com",
+        "template": "settings_claude.example.json",
+    },
+    "2": {
         "name": "glm",
         "label": "智谱 GLM",
         "site": "open.bigmodel.cn",
         "template": "settings_glm.example.json",
     },
-    "2": {
+    "3": {
         "name": "deepseek",
         "label": "DeepSeek",
         "site": "platform.deepseek.com",
         "template": "settings_deepseek.example.json",
     },
-    "3": {
+    "4": {
         "name": "kimi",
         "label": "Kimi (月之暗面)",
         "site": "platform.moonshot.cn",
@@ -113,22 +119,44 @@ def write_profile(name: str, data: dict) -> Path:
 
 def configure_preset(preset: dict) -> bool:
     name = preset["name"]
+    template_file = EXAMPLES_DIR / preset["template"]
+    if not template_file.exists():
+        print(f"ERROR: 模板不存在: {template_file}")
+        return False
+    data = json.loads(template_file.read_text("utf-8"))
+    data["label"] = preset["label"]
+
+    if name == "claude":
+        print(f"\n配置 {preset['label']}:")
+        print("    1. 使用 Anthropic API Key (sk-ant-...)")
+        print("    2. 复用本机官方登录凭据 (已在电脑终端运行过 claude login 订阅账号)")
+        auth_mode = _input("请选择认证方式 [1/2] (默认 1): ")
+        if auth_mode == "2":
+            data.setdefault("env", {})
+            data["env"].pop("ANTHROPIC_AUTH_TOKEN", None)
+            data["env"].pop("ANTHROPIC_BASE_URL", None)
+            target = write_profile(name, data)
+            print(f"OK: 已写入 {target}")
+            print("OK: 已配置为复用本机官方登录凭据（需本机已通过终端登录 Claude 账号）。")
+            return True
+        elif auth_mode == "\x00EOF":
+            print("[-] 跳过该供应商。")
+            return False
+
     key = _ask_key(preset["label"])
     if not key:
         print("[-] Key 未提供，跳过该供应商。")
         return False
-    template = EXAMPLES_DIR / preset["template"]
-    if not template.exists():
-        print(f"ERROR: 模板不存在: {template}")
-        return False
-    data = json.loads(template.read_text("utf-8"))
+
     data.setdefault("env", {})["ANTHROPIC_AUTH_TOKEN"] = key
-    data["label"] = preset["label"]
+    if name == "claude":
+        data["env"]["ANTHROPIC_BASE_URL"] = "https://api.anthropic.com"
+
     target = write_profile(name, data)
     print(f"OK: 已写入 {target}")
     env = data["env"]
     model = env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL") or env.get("ANTHROPIC_DEFAULT_OPUS_MODEL", "")
-    base = env.get("ANTHROPIC_BASE_URL", "")
+    base = env.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com" if name == "claude" else "")
     if base and model:
         print("正在联网验证 API Key ...")
         verify_key(base, key, model)
@@ -226,13 +254,16 @@ def main() -> int:
     # headless 兼容：MYCLAW_PROVIDER + MYCLAW_API_KEY 配一个预设就退出
     env_provider = os.environ.get("MYCLAW_PROVIDER", "").strip().lower()
     env_key = os.environ.get("MYCLAW_API_KEY", "").strip()
-    if env_provider and env_key:
+    if env_provider:
         preset = next((p for p in PRESETS.values() if p["name"] == env_provider), None)
         if preset is None:
             print("ERROR: 未知预置供应商:", env_provider)
             return 1
         data = json.loads((EXAMPLES_DIR / preset["template"]).read_text("utf-8"))
-        data.setdefault("env", {})["ANTHROPIC_AUTH_TOKEN"] = env_key
+        if env_key:
+            data.setdefault("env", {})["ANTHROPIC_AUTH_TOKEN"] = env_key
+            if env_provider == "claude":
+                data["env"]["ANTHROPIC_BASE_URL"] = "https://api.anthropic.com"
         data["label"] = preset["label"]
         target = write_profile(env_provider, data)
         (CONFIG_DIR / "active_profile").write_text(env_provider, "utf-8")
@@ -244,7 +275,7 @@ def main() -> int:
         print("\n[?] 请选择供应商编号并回车：")
         for k, p in PRESETS.items():
             print(f"    {k}. {p['label']}  ({p['site']})")
-        print("    4. 自定义供应商（手填 名称/地址/Key/三档模型）")
+        print("    5. 自定义供应商（手填 名称/地址/Key/三档模型）")
         choice = _input("编号（回车 = 配置完成）: ")
         if choice == "\x00EOF":
             break
@@ -255,10 +286,10 @@ def main() -> int:
             continue
         if choice in PRESETS:
             ok = configure_preset(PRESETS[choice])
-        elif choice == "4":
+        elif choice == "5":
             ok = configure_custom()
         else:
-            print("  无效编号，请输入 1-4。")
+            print("  无效编号，请输入 1-5。")
             continue
         if ok:
             configured_any = True

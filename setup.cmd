@@ -12,15 +12,17 @@ echo  2. 配置飞书 - 公用（可用范围全员，支持群成员一键导�
 echo  3. 飞书群成员一键导入白名单（日常维护工具）
 echo  4. 配置企业微信（手动填 + 连通实测）
 echo  5. 完整配置（飞书公用 + 企业微信）
+echo  6. 模型与供应商管理（切换/添加/修改/测试模型）
 echo  0. 退出
 echo.
-set /p choice=请选择 [0/1/2/3/4/5]: 
+set /p choice=请选择 [0/1/2/3/4/5/6]: 
 
 if "%choice%"=="1" goto feishu_personal
 if "%choice%"=="2" goto feishu_public
 if "%choice%"=="3" goto feishu_import
 if "%choice%"=="4" goto wecom
 if "%choice%"=="5" goto both
+if "%choice%"=="6" goto manage_models
 goto end
 
 :feishu_personal
@@ -102,6 +104,10 @@ if not exist ".venv\Scripts\python.exe" (
     goto end
 )
 ".venv\Scripts\python.exe" scripts\setup_wecom.py
+goto end
+
+:manage_models
+call models.cmd
 goto end
 
 :end

@@ -26,7 +26,9 @@ ACTIVE_PROFILE_FILE = CONFIG_DIR / "active_profile"
 
 # Profile display labels for card UI
 PROFILE_LABELS: dict[str, str] = {
+    "claude": "Claude (Anthropic 官方)",
     "glm": "GLM (智谱)",
+    "deepseek": "DeepSeek",
     "kimi": "Kimi (月之暗面)",
 }
 
@@ -166,12 +168,22 @@ def test_profile(name: str | None = None) -> tuple[bool, str]:
     env = load_profile_env(name)
     base_url = env.get("ANTHROPIC_BASE_URL", "")
     api_key = env.get("ANTHROPIC_AUTH_TOKEN", "")
-    model = env.get("ANTHROPIC_DEFAULT_OPUS_MODEL", "")
+    model = (
+        env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
+        or env.get("ANTHROPIC_DEFAULT_SONNET_MODEL")
+        or env.get("ANTHROPIC_DEFAULT_OPUS_MODEL")
+        or "claude-3-5-haiku-latest"
+    )
+
+    if name == "claude" and not api_key:
+        return True, "Claude 官方登录态（复用本机终端登录凭据）"
+
+    if name == "claude" and not base_url:
+        base_url = "https://api.anthropic.com"
 
     if not base_url or not api_key:
         return False, f"profile `{name}` 缺少 BASE_URL 或 API_KEY"
 
-    url = f"{base_url}/messages"
     payload = {
         "model": model,
         "max_tokens": 8,
@@ -183,14 +195,21 @@ def test_profile(name: str | None = None) -> tuple[bool, str]:
         "content-type": "application/json",
     }
 
-    try:
-        resp = httpx.post(url, json=payload, headers=headers, timeout=30)
-        if resp.status_code == 200:
-            return True, f"HTTP 200 ({name})"
-        return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
-    except httpx.ConnectError:
-        return False, f"无法连接 {base_url}"
-    except httpx.TimeoutException:
-        return False, "请求超时 (30s)"
-    except Exception as e:
-        return False, str(e)[:200]
+    last_err = ""
+    for suffix in ("/v1/messages", "/messages"):
+        url = f"{base_url.rstrip('/')}{suffix}"
+        try:
+            resp = httpx.post(url, json=payload, headers=headers, timeout=30)
+            if resp.status_code == 200:
+                return True, f"HTTP 200 ({name})"
+            if resp.status_code == 404 and "not_found" in resp.text:
+                last_err = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                continue
+            return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+        except httpx.ConnectError:
+            return False, f"无法连接 {base_url}"
+        except httpx.TimeoutException:
+            return False, "请求超时 (30s)"
+        except Exception as e:
+            return False, str(e)[:200]
+    return False, last_err or f"无法连接 {base_url}"

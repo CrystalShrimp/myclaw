@@ -10,9 +10,24 @@
 
 | 要素 | 含义与档位 | 初始确认方式 | IM 动态调整指令 | 全局生效范围 |
 |---|---|---|---|---|
-| **1. 模型供应商 (Provider)** | 调用的模型底座，如 `glm` (智谱)、`deepseek`、`kimi` 等 | 运行 `MyClaw-Setup.bat` 时菜单选择并粘贴 API Key，确认写入 `config/active_profile` | `/provider <name>`<br>例：`/provider glm` | 全局生效，跨所有目录与会话 |
+| **1. 模型供应商 (Provider)** | 调用的模型底座，如 `claude` (Anthropic 官方)、`glm` (智谱)、`deepseek`、`kimi` 等 | 运行 `MyClaw-Setup.bat` 或 `models.cmd` 选择并配置，确认写入 `config/active_profile` | `/provider <name>`<br>例：`/provider claude` | 全局生效，跨所有目录与会话 |
 | **2. 模型能力规格 (Level)** | 推理能力与响应速度档位：<br>• `haiku` (极速响应)<br>• `sonnet` (推荐，主力均衡)<br>• `opus` (最强深度推理) | 系统全局默认 `sonnet`。<br>在 `.env` 中由 `CLAUDE_DEFAULT_MODEL=sonnet` 确认 | `/model haiku\|sonnet\|opus`<br>例：`/model sonnet` | 全局生效，跨所有目录与会话 |
 | **3. 审批模式 (Mode)** | 工具调用与敏感操作的拦截控制：<br>• `h` (🛡️ 严格模式：高风险全审批)<br>• `m` (⚖️ 平衡模式：只读直接放行，写入推代码需审批)<br>• `l` (⚡ 全自动模式：低风险全放行) | 系统全局默认 `m`。<br>在 `.env` 中由 `APPROVAL_MODE=m` 确认 | `/mode h\|m\|l`<br>例：`/mode m` | 全局生效，跨所有目录与会话 |
+
+---
+
+## 模型与供应商独立管理 (`models.cmd`)
+
+除了初始安装阶段，用户可随时双击根目录 **`models.cmd`**（或运行 `setup.cmd` 选择第 6 项），进入独立的模型管理向导，无需经过初始环境检测：
+
+- **1. 查看与一键切换生效模型**：查看当前所有配置及档位映射，输入编号即可将指定供应商设为全局生效，并自动轻量握手测试；
+- **2. 添加新模型供应商**：
+  - **Claude (Anthropic 官方)**：支持输入 Anthropic API Key（`sk-ant-...`），或一键复用本机终端官方登录凭据（已通过 `claude login` 登录的 Pro/Team 账号，无需再填 Key）；
+  - **国内主流大模型**：智谱 GLM、DeepSeek、月之暗面 Kimi（仅需粘贴对应 Key）；
+  - **完全自定义供应商**：手动填写服务名、请求地址（Base URL）、Key 及三档模型映射；
+- **3. 修改已有供应商配置**：随时更新指定供应商的 Key、URL 或模型名称；
+- **4. 测试模型连通性**：一键向模型服务商发送极简 API 请求，验证网络连通性与 Key 状态；
+- **5. 删除供应商配置**：安全移除闲置的供应商配置（系统自动防护当前生效中的模型，防误删）。
 
 ---
 
@@ -37,15 +52,16 @@
 
 1. **第一步：基础依赖与 Key 确认**
    - 双击根目录 **`MyClaw-Setup.bat`**；
-   - 菜单选择供应商（1 智谱 / 2 DeepSeek / 3 Kimi）并粘贴 API Key；
-   - 脚本自动完成联网验证，并将选定的供应商写入全局活跃配置（`config/active_profile` 与 `config/global_preferences.json`）。
+   - 菜单选择供应商（1 Claude 官方 / 2 智谱 / 3 DeepSeek / 4 Kimi / 5 自定义）；
+   - 脚本自动完成联网验证，并将选定的供应商写入全局活跃配置（`config/active_profile`）。
 2. **第二步：消息通道确认**
    - 运行 **`setup.cmd`**：
      - `1. 配置飞书 - 个人用`：仅创建者本人可用，不扩大飞书应用可用范围；
      - `2. 配置飞书 - 公用`：将可用范围改为全员，默认 `ALLOWED_USERS` 留空（全员开放），并可一键将特定群聊的所有用户 ID 批量导入为白名单；
      - `3. 飞书群成员一键导入白名单`：日常维护工具，随时批量提取目标群成员并同步到白名单；
      - `4. 配置企业微信`：引导配置智能机器人长连接；
-     - `5. 完整配置`：飞书公用 + 企业微信双通道。
+     - `5. 完整配置`：飞书公用 + 企业微信双通道；
+     - `6. 模型与供应商管理`：随时调用 `models.cmd`。
 3. **第三步：启动服务**
    - 双击 **`MyClaw.bat`** 启动服务（或 `MyClaw-Restart.bat` 重启）。
 4. **第四步：直接对话**

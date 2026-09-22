@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime
 
 from config.settings import settings
+from app.channel.base import UserTarget
 from app.models.schemas import ApprovalRequest, ApprovalStatus, ParsedCommand, RiskLevel
 from app.audit.logger import audit_logger
 
@@ -18,7 +19,7 @@ class ApprovalManager:
         self._callbacks: dict[str, asyncio.Future[bool]] = {}
         self._switch_models: dict[str, str] = {}  # approval_id -> switched model
         self._approval_users: dict[str, str] = {}  # approval_id -> open_id
-        self._approval_chats: dict[str, str] = {}  # approval_id -> 群 chat_id（空=私聊）
+        self._approval_targets: dict[str, UserTarget] = {}  # approval_id -> 回复目标
 
     def request_approval(
         self,
@@ -58,8 +59,7 @@ class ApprovalManager:
         tool_arguments: dict,
         risk_level: RiskLevel,
         send_card_fn,  # async Callable(approval_id: str) -> None
-        open_id: str = "",
-        chat_id: str = "",
+        target: UserTarget | None = None,
     ) -> bool:
         """Request approval for a tool execution.
 
@@ -68,8 +68,7 @@ class ApprovalManager:
             tool_arguments: Arguments passed to the tool.
             risk_level: Risk level of the tool.
             send_card_fn: Async function that sends the approval card.
-            open_id: User's open_id for expiry notifications.
-            chat_id: 群 chat_id；超时通知发回原会话，空 = 私聊。
+            target: 消息来源回复目标；超时通知按它路由回原平台原会话。
 
         Returns:
             True if approved, False if rejected/expired.
@@ -93,10 +92,8 @@ class ApprovalManager:
         future: asyncio.Future[bool] = asyncio.get_event_loop().create_future()
         self._callbacks[approval_id] = future
 
-        if open_id:
-            self._approval_users[approval_id] = open_id
-        if chat_id:
-            self._approval_chats[approval_id] = chat_id
+        if target is not None:
+            self._approval_targets[approval_id] = target
 
         loop = asyncio.get_event_loop()
         loop.create_task(self._expire_after(approval_id, settings.tool_approval_timeout))
@@ -105,6 +102,7 @@ class ApprovalManager:
             tool_name=tool_name,
             approval_id=approval_id,
             risk_level=risk_level.value if hasattr(risk_level, "value") else str(risk_level),
+            platform=target.platform if target else "",
         )
 
         # Send the tool approval card
@@ -170,28 +168,26 @@ class ApprovalManager:
                 decision="expired",
                 command=request.command.command,
             )
-            # Notify user that approval expired
-            try:
-                from app.feishu.client import feishu_client
-                open_id = self._approval_users.get(approval_id, "")
-                chat_id = self._approval_chats.get(approval_id, "")
-                msg = (
-                    f"⏱️ 审批超时未处理，任务已自动拒绝并停止。\n"
-                    f"指令：`{request.command.command[:80]}`"
-                )
-                if chat_id:
-                    await feishu_client.send_text(chat_id, msg, is_chat=True)
-                elif open_id:
-                    await feishu_client.send_text(open_id, msg)
-            except Exception:
-                pass
+            # Notify user that approval expired（按发起平台路由回原会话）
+            target = self._approval_targets.get(approval_id)
+            if target is not None:
+                try:
+                    from app.channel.registry import get_channel
+
+                    msg = (
+                        f"⏱️ 审批超时未处理，任务已自动拒绝并停止。\n"
+                        f"指令：`{request.command.command[:80]}`"
+                    )
+                    await get_channel(target.platform).send_text(target, msg)
+                except Exception:
+                    pass
         self.cleanup(approval_id)
 
     def cleanup(self, approval_id: str) -> None:
         self._pending.pop(approval_id, None)
         self._callbacks.pop(approval_id, None)
         self._approval_users.pop(approval_id, None)
-        self._approval_chats.pop(approval_id, None)
+        self._approval_targets.pop(approval_id, None)
 
     def set_switch_model(self, approval_id: str, model: str) -> None:
         """Store a model switch decision for a model selection card."""

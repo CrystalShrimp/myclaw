@@ -90,11 +90,8 @@ def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
             pass
 
 from config.settings import settings
-from app.feishu.cards import (
-    build_progress_card,
-    build_error_card,
-)
-from app.feishu.client import feishu_client
+from app.channel.base import ProgressSnap, UserTarget
+from app.channel.registry import get_channel
 from app.models.schemas import AgentResult, ToolCallRecord
 from app.audit.logger import audit_logger
 from app.profiles import load_profile_env, MYCLAW_ROOT, CONFIG_DIR
@@ -256,8 +253,8 @@ class ClaudeCLILoop:
     def __init__(self) -> None:
         self._processes: dict[str, asyncio.subprocess.Process] = {}
         self._stdin_writers: dict[str, asyncio.StreamWriter] = {}
-        # open_id -> 群聊 chat_id（空 = 私聊）。崩溃告警等后续发送用它路由。
-        self._chat_targets: dict[str, str] = {}
+        # 会话 key -> 回复目标（平台+群/私路由）。崩溃告警等后续发送用它路由。
+        self._targets: dict[str, UserTarget] = {}
         # 会话 key -> 真实 open_id。key 是"群=chat_id / 私聊=p:open_id"（私聊与
         # 群聊进程/记忆完全隔离），但进度卡片、审批卡片、崩溃私聊告警仍要发给
         # 真实的 open_id，查这张表还原。
@@ -318,14 +315,15 @@ class ClaudeCLILoop:
         profile_name: str = "",
         claude_session_id: str | None = None,
         resume_session_id: str | None = None,
-        chat_id: str = "",
-        owner_open_id: str = "",
+        target: UserTarget | None = None,
+        effort: str = "",
     ) -> AgentResult:
         """Send a prompt to the user's interactive Claude process.
 
-        *open_id* 在这里是"会话 key"（群=chat_id / 私聊=p:open_id），私聊与
-        群聊各起各的进程互不串台；*owner_open_id* 是真实 open_id，用于把
-        进度卡片 / 审批 / 崩溃告警发到用户私聊。
+        *open_id* 在这里是"会话 key"（群=g:chat_id:open_id / 私聊=p:open_id），
+        同群每人、私聊与群聊各起各的进程互不串台；*target* 是消息来源的
+        平台回复目标（进度卡、崩溃告警按它路由）；*effort* 透传
+        claude --effort（空 = CLI 默认）。
 
         Starts the process on first call (or after a crash).  Session
         handling uses claude's native flags:
@@ -345,7 +343,7 @@ class ClaudeCLILoop:
                 await self._teardown_previous(open_id)
                 await self._start_process(
                     open_id, workspace, model, approval_mode, profile_name,
-                    claude_session_id, resume_session_id,
+                    claude_session_id, resume_session_id, effort=effort,
                 )
 
             writer = self._stdin_writers.get(open_id)
@@ -354,14 +352,16 @@ class ClaudeCLILoop:
                     prompt, "stdin writer not available (process may have crashed)",
                 )
 
-            # Per-message state: single persistent progress card, event-driven updates.
+            # Per-message state: single persistent progress surface, event-driven updates.
             # Design rationale: previous design opened a new card every 3000 chars of
-            # streamed text, producing 4+ fragmented cards per long task. Now one card
-            # transits running → (retrying/awaiting) → completed/failed/cancelled,
-            # PATCHed only on meaningful events (tool_use / attachment / api_retry / result).
+            # streamed text, producing 4+ fragmented cards per long task. Now one
+            # surface transits running → (retrying/awaiting) → completed/failed/
+            # cancelled, refreshed only on meaningful events (tool_use / attachment /
+            # api_retry / result). 节流与刷新形态（飞书 PATCH / 企微流式）由
+            # 平台的 ProgressHandle 实现负责。
             msg_state = {
-                # Card identity
-                "card_id": "",
+                # Progress surface
+                "progress": None,
                 "model": chosen,
                 # Progress counters
                 "step": 0,
@@ -369,7 +369,6 @@ class ClaudeCLILoop:
                 "warnings": 0,
                 "last_warning": "",
                 "started_at": asyncio.get_event_loop().time(),
-                "last_patch_at": 0.0,
                 # Tool/thinking display state
                 "current_tool": "",
                 "current_tool_args": "",
@@ -377,19 +376,20 @@ class ClaudeCLILoop:
                 "last_text": "",         # snapshot of last completed text block
             }
 
-            # Create the single progress card (running state, empty body).
-            # 群聊发起的任务，进度卡片发回群里（chat_id 路由）。
-            self._chat_targets[open_id] = chat_id
-            self._owners[open_id] = owner_open_id or open_id
+            # Open the progress surface (running state, empty body) on the
+            # origin platform. 群聊发起的任务，进度发回群里（target 路由）。
+            self._targets[open_id] = target or UserTarget(
+                platform="feishu", user_id=self._owners.get(open_id, open_id),
+            )
+            self._owners[open_id] = self._targets[open_id].user_id or open_id
             try:
-                card = build_progress_card(chosen, "running")
-                if chat_id:
-                    card_msg = await feishu_client.send_card(chat_id, card, is_chat=True)
-                else:
-                    card_msg = await feishu_client.send_card(self._owners[open_id], card)
-                msg_state["card_id"] = card_msg.get("data", {}).get("message_id", "")
+                channel = get_channel(self._targets[open_id].platform)
+                msg_state["progress"] = await channel.open_progress(
+                    self._targets[open_id],
+                    ProgressSnap(model=chosen, status="running"),
+                )
             except Exception as e:
-                logger.warning("Failed to create progress card: %s", e)
+                logger.warning("Failed to create progress surface: %s", e)
 
             # Queue future + msg_state BEFORE writing stdin so the reader
             # always finds msg_state for the very first stream_event.
@@ -482,6 +482,7 @@ class ClaudeCLILoop:
         approval_mode: str, profile_name: str = "",
         claude_session_id: str | None = None,
         resume_session_id: str | None = None,
+        effort: str = "",
     ) -> None:
         chosen = model or settings.claude_default_model
         cli_path = settings.claude_cli_path
@@ -533,6 +534,8 @@ class ClaudeCLILoop:
             args.extend(["--permission-mode", "bypassPermissions"])
         if chosen:
             args.extend(["--model", chosen])
+        if effort:
+            args.extend(["--effort", effort])
 
         env = _build_env(workspace, profile_name)
         await _ensure_hook_config(workspace)
@@ -549,8 +552,8 @@ class ClaudeCLILoop:
         self._processes[open_id] = proc
         self._stdin_writers[open_id] = proc.stdin  # type: ignore[assignment]
         logger.warning(
-            "Interactive Claude CLI started: open_id=%s workspace=%s model=%s pid=%s",
-            open_id, workspace, chosen, proc.pid,
+            "Interactive Claude CLI started: open_id=%s workspace=%s model=%s effort=%s pid=%s",
+            open_id, workspace, chosen, effort or "(default)", proc.pid,
         )
 
         # Start background reader
@@ -568,43 +571,35 @@ class ClaudeCLILoop:
             return entries[0][1]
         return None
 
-    async def _patch_progress(self, msg_state: dict, status: str) -> None:
-        """Rebuild the progress card from msg_state and PATCH it.
+    async def _patch_progress(self, msg_state: dict, status: str, *, warning_event: bool = False) -> None:
+        """Push a progress snapshot to the platform handle.
 
-        Idempotent and best-effort: any Feishu API error is swallowed since
-        a stale card is preferable to killing the task. Throttled to 0.5s
-        minimum interval between patches to avoid Feishu QPS limits.
+        Best-effort：节流与发送异常都由 ProgressHandle 实现吞掉，
+        过期进度远好过让任务失败。
         """
-        card_id = msg_state.get("card_id")
-        if not card_id:
+        progress = msg_state.get("progress")
+        if progress is None:
             return
+        snap = self._snapshot(msg_state, status)
+        snap.warning_event = warning_event
+        await progress.update(snap)
+
+    @staticmethod
+    def _snapshot(msg_state: dict, status: str) -> ProgressSnap:
         now = asyncio.get_event_loop().time()
-        # Throttle: 0.5s between patches except for state transitions
-        # (status change always patches immediately).
-        prev_status = msg_state.get("last_status")
-        if status == prev_status and now - msg_state.get("last_patch_at", 0) < 0.5:
-            return
-        try:
-            elapsed = now - msg_state.get("started_at", now)
-            # Carry the latest thinking snapshot to display
-            last_text = msg_state.get("current_text") or msg_state.get("last_text", "")
-            card = build_progress_card(
-                msg_state.get("model", ""),
-                status,
-                step=msg_state.get("step", 0),
-                tool_counts=msg_state.get("tool_counts", {}),
-                elapsed_s=elapsed,
-                warnings=msg_state.get("warnings", 0),
-                current_tool=msg_state.get("current_tool", ""),
-                current_tool_args=msg_state.get("current_tool_args", ""),
-                last_text=last_text if status == "running" else "",
-                last_warning=msg_state.get("last_warning", "") if status != "running" else "",
-            )
-            await feishu_client.update_card(card_id, card)
-            msg_state["last_patch_at"] = now
-            msg_state["last_status"] = status
-        except Exception as e:
-            logger.debug("Progress card PATCH failed (non-fatal): %s", e)
+        last_text = msg_state.get("current_text") or msg_state.get("last_text", "")
+        return ProgressSnap(
+            model=msg_state.get("model", ""),
+            status=status,
+            step=msg_state.get("step", 0),
+            tool_counts=msg_state.get("tool_counts", {}),
+            elapsed_s=now - msg_state.get("started_at", now),
+            warnings=msg_state.get("warnings", 0),
+            current_tool=msg_state.get("current_tool", ""),
+            current_tool_args=msg_state.get("current_tool_args", ""),
+            last_text=last_text,
+            last_warning=msg_state.get("last_warning", ""),
+        )
 
     # ---- reader loop ----
 
@@ -655,10 +650,14 @@ class ClaudeCLILoop:
                 if etype == "system" and event.get("subtype") == "init":
                     claude_sid = event.get("session_id", "")
                     if claude_sid:
+                        target = self._targets.get(open_id)
                         session_registry[claude_sid] = {
                             "open_id": self._owners.get(open_id, open_id),
                             "approval_mode": approval_mode,
-                            "chat_id": self._chat_targets.get(open_id, ""),
+                            "chat_id": target.chat_id if target else "",
+                            # hooks 发审批卡 / 超时提醒按它路由回发起平台
+                            "platform": target.platform if target else "feishu",
+                            "target": target,
                             # 进程/状态表按会话 key（g:群:人 / p:人）注册，
                             # hooks 拒绝后取消进程必须用同一个 key
                             "skey": open_id,
@@ -722,11 +721,8 @@ class ClaudeCLILoop:
                         msg_state["last_warning"] = _extract_warning_summary(
                             event.get("attachment", {})
                         )
-                        # Throttle: don't PATCH more than once per 2s for warning spam
-                        now = asyncio.get_event_loop().time()
-                        if now - msg_state.get("last_warning_patch", 0) >= 2.0:
-                            msg_state["last_warning_patch"] = now
-                            await self._patch_progress(msg_state, "running")
+                        # 告警风暴的 2s 重节流由 ProgressHandle 按 warning_event 处理
+                        await self._patch_progress(msg_state, "running", warning_event=True)
 
                 # --- result ---
                 elif etype == "result":
@@ -755,40 +751,29 @@ class ClaudeCLILoop:
                 if not future.done():
                     reason = self._last_error or f"Claude CLI exited (code={exit_code})"
                     future.set_result(self._error_result("", reason))
-                    # Update card with error if it exists
-                    if msg_state.get("card_id"):
-                        try:
-                            err_card = build_error_card("Claude CLI 已退出", reason[:3500])
-                            await feishu_client.update_card(msg_state["card_id"], err_card)
-                        except Exception:
-                            pass
+                    # Update progress surface with error if it exists
+                    # （error() 内部吞异常，过期进度好过中断任务）
+                    if msg_state.get("progress") is not None:
+                        await msg_state["progress"].error("Claude CLI 已退出", reason)
 
             # 如果当前进程依然是注册进程，说明是发生了非预期的意外崩溃
             is_unexpected = (self._processes.get(open_id) == proc)
             if is_unexpected and (exit_code != 0 or self._last_error):
                 reason = self._last_error or f"进程异常退出 (退出码={exit_code})"
-                crash_chat_id = self._chat_targets.get(open_id, "")
-                if crash_chat_id:
-                    asyncio.create_task(
-                        feishu_client.send_text(
-                            crash_chat_id,
-                            f"🚨 **Claude 运行进程异常退出** 🚨\n"
-                            f"退出状态码: `{exit_code}`\n"
-                            f"错误详情:\n```\n{reason[:1000]}\n```\n"
-                            f"💡 自愈提示：您可以尝试发送 `/new` 重置会话，或发送 `/cd` 切换到其他可用工作区。",
-                            is_chat=True,
+                crash_target = self._targets.get(open_id)
+                if crash_target is not None:
+                    crash_msg = (
+                        f"🚨 **Claude 运行进程异常退出** 🚨\n"
+                        f"退出状态码: `{exit_code}`\n"
+                        f"错误详情:\n```\n{reason[:1000]}\n```\n"
+                        f"💡 自愈提示：您可以尝试发送 `/new` 重置会话，或发送 `/cd` 切换到其他可用工作区。"
+                    )
+                    try:
+                        asyncio.create_task(
+                            get_channel(crash_target.platform).send_text(crash_target, crash_msg),
                         )
-                    )
-                else:
-                    asyncio.create_task(
-                        feishu_client.send_text(
-                            self._owners.get(open_id, open_id),
-                            f"🚨 **Claude 运行进程异常退出** 🚨\n"
-                            f"退出状态码: `{exit_code}`\n"
-                            f"错误详情:\n```\n{reason[:1000]}\n```\n"
-                            f"💡 自愈提示：您可以尝试发送 `/new` 重置会话，或发送 `/cd` 切换到其他可用工作区。"
-                    )
-                )
+                    except Exception as e:
+                        logger.warning("Failed to send crash alert: %s", e)
 
             logger.info(
                 "Claude interactive process exited: open_id=%s code=%s",
@@ -834,8 +819,6 @@ class ClaudeCLILoop:
         tools = msg_state.get("tools", [])
         tool_counts = msg_state.get("tool_counts", {})
         tool_count = sum(tool_counts.values())
-        card_id = msg_state.get("card_id", "")
-
         status = "failed" if subtype.startswith("error") else "completed"
         result_text = event.get("result", "") or text
 
@@ -865,30 +848,27 @@ class ClaudeCLILoop:
             first_key = next(iter(user_history))
             user_history.pop(first_key, None)
 
-        # Transition progress card → final state (same card_id, no new card).
-        if card_id:
-            try:
-                final_status = "cancelled" if status == "cancelled" else status
-                elapsed = asyncio.get_event_loop().time() - msg_state.get("started_at", asyncio.get_event_loop().time())
-                final_card = build_progress_card(
-                    msg_state.get("model", event.get("model", "")),
-                    final_status,
-                    step=msg_state.get("step", 0),
-                    tool_counts=tool_counts,
-                    elapsed_s=elapsed,
-                    warnings=msg_state.get("warnings", 0),
-                    result_text=result_text,
-                    input_tokens=usage.get("input_tokens", 0),
-                    output_tokens=usage.get("output_tokens", 0),
-                    error=error,
-                    session_id=result.session_id,
-                    task_id=task_id,
-                )
-                asyncio.create_task(
-                    feishu_client.update_card(card_id, final_card),
-                )
-            except Exception:
-                pass
+        # Transition progress surface → final state (same surface, no new card).
+        progress = msg_state.get("progress")
+        if progress is not None:
+            final_status = "cancelled" if status == "cancelled" else status
+            elapsed = asyncio.get_event_loop().time() - msg_state.get("started_at", asyncio.get_event_loop().time())
+            final_snap = ProgressSnap(
+                model=msg_state.get("model", event.get("model", "")),
+                status=final_status,
+                step=msg_state.get("step", 0),
+                tool_counts=tool_counts,
+                elapsed_s=elapsed,
+                warnings=msg_state.get("warnings", 0),
+                result_text=result_text,
+                input_tokens=usage.get("input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+                error=error,
+                session_id=result.session_id,
+                task_id=task_id,
+            )
+            # finish() 内部吞异常（过期进度好过中断任务）
+            asyncio.create_task(progress.finish(final_snap))
 
         if not future.done():
             future.set_result(result)

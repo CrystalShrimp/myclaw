@@ -192,8 +192,19 @@ def get_health_detail() -> tuple[bool, str]:
         with opener.open(req, timeout=2) as response:
             if response.status == 200:
                 data = json.loads(response.read().decode('utf-8'))
-                ws = "🟢 已连接" if data.get("ws_connected") else "🔴 未连接"
-                return True, f"✅ MyClaw 后端服务运行正常 (端口 8080)\n飞书长连接: {ws}"
+                lines = ["✅ MyClaw 后端服务运行正常 (端口 8080)"]
+                channels = data.get("channels") or {}
+                feishu = channels.get("feishu")
+                if feishu is not None:
+                    ws = "🟢 已连接" if feishu.get("connected") else "🔴 未连接"
+                else:
+                    ws = "⚪ 未启用"
+                lines.append(f"飞书长连接: {ws}")
+                wecom = channels.get("wecom")
+                if wecom is not None:
+                    wc = "🟢 已连接" if wecom.get("connected") else "🔴 未连接"
+                    lines.append(f"企业微信长连接: {wc}")
+                return True, "\n".join(lines)
     except Exception as e:
         return False, f"❌ 后端服务未响应 (8080 端口): {e}\n详情请查看 myclaw.log 日志。"
     return False, "❌ 后端服务未响应，请查看日志。"

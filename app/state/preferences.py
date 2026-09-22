@@ -15,13 +15,18 @@ logger = logging.getLogger("myclaw.preferences")
 class UserPreferences:
     """Myclaw runtime choices kept outside Claude conversation state."""
 
-    model: str = ""  # provider profile, for example glm or kimi
-    level: str = ""  # haiku, sonnet or opus
-    mode: str = ""   # h, m or l
+    model: str = ""    # provider profile, for example glm or kimi
+    level: str = ""    # haiku, sonnet or opus
+    mode: str = ""     # h, m or l
+    effort: str = ""   # claude --effort: low/medium/high/xhigh/max，空 = CLI 默认
 
     @property
     def complete(self) -> bool:
+        # effort 是可选增强项，不参与"初始配置是否完成"的判定
         return bool(self.model and self.level and self.mode)
+
+
+GLOBAL_PREFERENCES_FILE = MYCLAW_ROOT / "config" / "global_preferences.json"
 
 
 class PreferencesManager:
@@ -30,77 +35,68 @@ class PreferencesManager:
         self._state_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
 
-    def _path(self, open_id: str) -> Path:
-        return self._state_dir / f"{open_id}.json"
+    def _get_system_defaults(self) -> UserPreferences:
+        from app.profiles import get_active_profile
+        from config.settings import settings
+        default_model = get_active_profile() or "glm"
+        default_level = getattr(settings, "claude_default_model", "") or "sonnet"
+        default_mode = getattr(settings, "approval_mode", "") or "m"
+        return UserPreferences(
+            model=default_model,
+            level=default_level,
+            mode=default_mode,
+            effort="",
+        )
 
-    def get(self, open_id: str) -> UserPreferences:
-        path = self._path(open_id)
-        if not path.exists():
-            return UserPreferences()
+    def get_global(self) -> UserPreferences:
+        defaults = self._get_system_defaults()
+        if not GLOBAL_PREFERENCES_FILE.exists():
+            return defaults
         try:
-            data = json.loads(path.read_text("utf-8"))
+            data = json.loads(GLOBAL_PREFERENCES_FILE.read_text("utf-8"))
             return UserPreferences(
-                model=str(data.get("model", "")),
-                level=str(data.get("level", "")),
-                mode=str(data.get("mode", "")),
+                model=str(data.get("model", "") or defaults.model),
+                level=str(data.get("level", "") or defaults.level),
+                mode=str(data.get("mode", "") or defaults.mode),
+                effort=str(data.get("effort", "")),
             )
         except Exception as exc:
-            logger.warning("Failed to load preferences for %s: %s", open_id, exc)
-            return UserPreferences()
+            logger.warning("Failed to load global preferences: %s", exc)
+            return defaults
 
-    def save(self, open_id: str, preferences: UserPreferences) -> None:
+    def save_global(self, preferences: UserPreferences) -> None:
+        from app.profiles import set_active_profile
         payload = json.dumps(asdict(preferences), indent=2, ensure_ascii=False)
         with self._lock:
-            self._path(open_id).write_text(payload, "utf-8")
+            GLOBAL_PREFERENCES_FILE.parent.mkdir(parents=True, exist_ok=True)
+            GLOBAL_PREFERENCES_FILE.write_text(payload, "utf-8")
+        if preferences.model:
+            try:
+                set_active_profile(preferences.model)
+            except Exception:
+                pass
+
+    def get(self, open_id: str) -> UserPreferences:
+        """获取当前配置。优先读取系统全局配置，保证切换目录及新项目时无需重新配置。"""
+        return self.get_global()
+
+    def save(self, open_id: str, preferences: UserPreferences) -> None:
+        """保存配置。同步写入全局配置，一处调整全局生效。"""
+        self.save_global(preferences)
 
     def clear(self, open_id: str) -> UserPreferences:
-        preferences = UserPreferences()
-        self.save(open_id, preferences)
-        return preferences
-
-    def _workspace_config_path(self, workspace: str) -> Path | None:
-        if not workspace:
-            return None
-        try:
-            ws_dir = Path(workspace).resolve()
-            if not ws_dir.exists() or not ws_dir.is_dir():
-                return None
-            claude_dir = ws_dir / ".claude"
-            claude_dir.mkdir(parents=True, exist_ok=True)
-            return claude_dir / "myclaw_config.json"
-        except Exception:
-            return None
+        """重置配置回系统默认值。"""
+        defaults = self._get_system_defaults()
+        self.save_global(defaults)
+        return defaults
 
     def load_workspace_config(self, workspace: str) -> UserPreferences | None:
-        """Load workspace-level myclaw_config.json if it exists and is complete."""
-        config_path = self._workspace_config_path(workspace)
-        if not config_path or not config_path.exists():
-            return None
-        try:
-            data = json.loads(config_path.read_text("utf-8"))
-            pref = UserPreferences(
-                model=str(data.get("model", "")),
-                level=str(data.get("level", "")),
-                mode=str(data.get("mode", "")),
-            )
-            return pref if pref.complete else None
-        except Exception as exc:
-            logger.warning("Failed to load workspace config from %s: %s", workspace, exc)
-            return None
+        """已废除项目内配置记忆，统一使用全局配置。"""
+        return None
 
     def save_workspace_config(self, workspace: str, preferences: UserPreferences) -> None:
-        """Save complete preferences to workspace/.claude/myclaw_config.json."""
-        if not preferences.complete:
-            return
-        config_path = self._workspace_config_path(workspace)
-        if not config_path:
-            return
-        try:
-            payload = json.dumps(asdict(preferences), indent=2, ensure_ascii=False)
-            config_path.write_text(payload, "utf-8")
-            logger.info("Saved workspace config to %s", config_path)
-        except Exception as exc:
-            logger.warning("Failed to save workspace config to %s: %s", workspace, exc)
+        """已废除项目内配置记忆，不再往项目目录下写入配置。"""
+        pass
 
 
 preferences_manager = PreferencesManager()

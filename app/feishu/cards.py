@@ -58,9 +58,9 @@ def build_model_selection_card(
     all_models = [("haiku", "secondary"), ("sonnet", "primary"), ("opus", "danger")]
 
     def _label(code: str) -> str:
-        base = model_desc[code]
+        # 有真实模型 id 时只显示 id（如 glm-5-turbo），缺配置回落到档位描述
         actual = (models_map or {}).get(code, "")
-        return f"{base} · {actual}" if actual else base
+        return actual or model_desc[code]
 
     actions = []
     for model_code, btn_type in all_models:
@@ -103,6 +103,67 @@ def build_model_selection_card(
                 "tag": "action",
                 "actions": actions,
             },
+        ],
+    }
+
+
+# ===== Effort Selection Card (thinking effort) =====
+
+
+def build_effort_selection_card(
+    approval_id: str = "",
+    current_effort: str = "",
+) -> dict:
+    """思考力度选择卡片 — low / medium / high / xhigh / max 五档。"""
+    effort_desc = {
+        "low": "Low (轻量/快速)",
+        "medium": "Medium (标准/推荐)",
+        "high": "High (深度)",
+        "xhigh": "xHigh (更深)",
+        "max": "Max (最强)",
+    }
+    order = [
+        ("low", "secondary"),
+        ("medium", "primary"),
+        ("high", "default"),
+        ("xhigh", "default"),
+        ("max", "danger"),
+    ]
+    active = current_effort if current_effort in effort_desc else ""
+
+    actions = []
+    for effort, btn_type in order:
+        is_active = (effort == active)
+        actions.append({
+            "tag": "button",
+            "text": {
+                "tag": "plain_text",
+                "content": f"{'✓ ' if is_active else ''}{effort_desc[effort]}",
+            },
+            "type": btn_type if not is_active else "default",
+            "value": {
+                "approval_id": approval_id,
+                "act": "switch_effort",
+                "effort": effort,
+                "type": "effort_selection",
+            },
+        })
+
+    display = f"**当前已选：** `{active or 'CLI 默认'}`\n"
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "选择思考力度 (Reasoning Effort)"},
+            "template": "blue",
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": display},
+            },
+            {"tag": "hr"},
+            {"tag": "action", "actions": actions},
         ],
     }
 
@@ -1069,7 +1130,7 @@ def build_help_card() -> dict:
         "🤖 **MyClaw 飞书机器人指令手册**\n\n"
         "**⚙️ 厂家与模型设置**\n"
         "- `/provider [profile]` : 切换模型供应商/厂家 (如 zhipu, deepseek, anthropic)\n"
-        "- `/model [haiku|sonnet|opus]` : 切换模型规格/等级 (同 `/level`)\n"
+        "- `/model [haiku|sonnet|opus]` : 切换模型规格/档位\n"
         "- `/mode [h|m|l]` : 切换审批模式 (`h` 严格全审批 / `m` 只读放行写入审批 / `l` 全自动放行)\n"
         "- `/effort [low|medium|high|xhigh|max]` : 切换思考力度 (`default` 恢复 CLI 默认)\n\n"
         "**📁 工作区与文件管理**\n"

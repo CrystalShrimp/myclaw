@@ -168,6 +168,11 @@ class FeishuChannel:
                 current_model=payload["current_model"],
                 models_map=payload.get("models_map"),
             )
+        elif kind == "effort_selection":
+            card = fc.build_effort_selection_card(
+                approval_id=payload.get("approval_id", ""),
+                current_effort=payload.get("current_effort", ""),
+            )
         elif kind == "mode_selection":
             card = fc.build_mode_selection_card(
                 approval_id=payload["approval_id"],

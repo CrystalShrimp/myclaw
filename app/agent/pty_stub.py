@@ -138,84 +138,11 @@ def create_cli_born_session(
     startup_drain_s: float = _STARTUP_DRAIN_S,
     total_timeout_s: float = _TOTAL_TIMEOUT_S,
 ) -> str:
-    """Create a cli-born Claude Code session in ``workspace`` via PTY.
+    """Create a cli-born Claude Code session in ``workspace``.
 
-    Returns the session_id (UUID hex). Raises RuntimeError on failure.
-
-    The PTY process is killed before returning; callers should subsequently
-    launch claude in SDK mode with ``--resume <session_id>`` to actually
-    execute tasks against this session.
+    已升级为跨平台原生文件规范注水实现（见 app.agent.session_sync）。
+    0 秒等待、0 外部依赖、100% 兼容 macOS 与 Windows。
     """
-    if not _is_windows():
-        raise RuntimeError(
-            f"PTY stub creation is Windows-only (current: {platform.system()})"
-        )
+    from app.agent.session_sync import create_cli_born_session as _create_native
+    return _create_native(workspace)
 
-    workspace_path = Path(workspace).resolve()
-    if not workspace_path.is_dir():
-        raise NotADirectoryError(f"workspace not a dir: {workspace}")
-
-    # Import lazily so non-Windows hosts don't fail at module import time.
-    from winpty import PTY
-
-    marker = f"MYCLAW_STUB_{uuid.uuid4().hex}"
-    placeholder = f"{marker}: {_PLACEHOLDER_PROMPT}"
-    started_at = time.time()
-
-    appname, cmdline = _resolve_pty_command()
-    logger.info(
-        "PTY stub spawn: appname=%s cmdline=%s cwd=%s marker=%s",
-        appname, cmdline, workspace_path, marker,
-    )
-
-    pty = PTY(120, 40)
-    pty.spawn(appname, cmdline, str(workspace_path))
-    pid = pty.pid
-
-    try:
-        # Drain TUI startup; Claude needs time before accepting input.
-        _drain(pty, startup_drain_s)
-
-        # Send placeholder prompt + Enter.
-        try:
-            pty.write(placeholder)
-            time.sleep(0.5)
-            pty.write("\r")
-        except Exception as e:
-            raise RuntimeError(f"PTY write failed: {type(e).__name__}: {e}") from e
-
-        # Poll for session file containing our marker.
-        deadline = time.monotonic() + total_timeout_s
-        session_path: Path | None = None
-        while time.monotonic() < deadline:
-            _drain(pty, 0.3)
-            session_path = _find_session_file(workspace, marker, started_at)
-            if session_path:
-                break
-            if not pty.isalive():
-                raise RuntimeError(
-                    "claude exited before stub session file appeared; "
-                    "TUI may have hit a trust/login screen"
-                )
-            time.sleep(0.2)
-
-        if not session_path:
-            raise RuntimeError(
-                f"timed out after {total_timeout_s}s waiting for stub session file"
-            )
-
-        session_id = session_path.stem
-        logger.info(
-            "PTY stub created: session_id=%s file=%s", session_id, session_path
-        )
-        return session_id
-
-    finally:
-        try:
-            _kill_tree(pid)
-        except Exception:
-            pass
-        try:
-            pty.cancel_io()
-        except Exception:
-            pass

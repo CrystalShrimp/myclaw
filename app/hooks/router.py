@@ -20,8 +20,8 @@ from fastapi import APIRouter, Request
 
 from app.agent.cli_loop import session_registry
 from app.approval.manager import approval_manager
-from app.feishu.client import feishu_client
-from app.feishu.cards import build_tool_approval_card
+from app.channel.base import ApprovalUI, PLATFORM_FEISHU, UserTarget
+from app.channel.registry import get_channel
 
 logger = logging.getLogger("myclaw.hooks")
 
@@ -135,8 +135,16 @@ async def pre_tool_use(request: Request) -> dict:
 
     open_id = reg["open_id"]
     mode = reg.get("approval_mode", "m")  # 'h' = high risk (strict), 'm' = medium (balanced), 'l' = low risk (auto)
-    # 群任务的高风险工具审批卡片必须发回群里，不能泄进发起人私聊
-    reg_chat_id = reg.get("chat_id", "")
+    # 群任务的高风险工具审批卡片必须发回群里，不能泄进发起人私聊；
+    # 平台由会话注册表携带（飞书 / 企微），路由统一交给 Channel
+    target = reg.get("target")
+    if target is None:
+        target = UserTarget(
+            platform=reg.get("platform") or PLATFORM_FEISHU,
+            user_id=open_id,
+            chat_id=reg.get("chat_id", ""),
+            is_group=bool(reg.get("chat_id")),
+        )
 
     # --- Mode l (⚡ 全自动模式 / Low Risk Auto): 100% 自动放行一切工具（包含 Edit, Write, Bash） ---
     if mode == "l":
@@ -154,23 +162,18 @@ async def pre_tool_use(request: Request) -> dict:
 
     # --- Mode h (🛡️ 严格模式 / High Risk) 或 高风险写操作: 发送确认卡片 ---
     approval_id = uuid.uuid4().hex[:12]
-    _hook_log.append(f"→ SENDING CARD approval_id={approval_id} to open_id={open_id}")
+    _hook_log.append(f"→ SENDING CARD approval_id={approval_id} to {target.platform}:{target.user_id}")
 
     async def _send_card(aid: str) -> None:
-        card = build_tool_approval_card(
+        approval = ApprovalUI(
             approval_id=aid,
             tool_name=tool_name,
             tool_input=tool_input,
             session_id=claude_session_id,
         )
         try:
-            if reg_chat_id:
-                from app.feishu.cards import stamp_card_chat
-                stamp_card_chat(card, reg_chat_id)
-                result = await feishu_client.send_card(reg_chat_id, card, is_chat=True)
-            else:
-                result = await feishu_client.send_card(open_id, card)
-            _hook_log.append(f"→ CARD SENT ok, msg_id={result.get('data', {}).get('message_id', '?')}")
+            await get_channel(target.platform).send_approval(target, approval)
+            _hook_log.append(f"→ CARD SENT ok (platform={target.platform})")
         except Exception as e:
             _hook_log.append(f"→ CARD SEND FAILED: {e}")
             raise
@@ -183,8 +186,7 @@ async def pre_tool_use(request: Request) -> dict:
         tool_arguments=tool_input,
         risk_level="high" if actual_high_risk else "low",
         send_card_fn=_send_card,
-        open_id=open_id,
-        chat_id=reg_chat_id,
+        target=target,
     )
 
     if not approved:

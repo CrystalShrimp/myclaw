@@ -38,6 +38,7 @@ class AuditLogger:
         approved_by: str = "",
         status: str = "",
         result_summary: str = "",
+        platform: str = "",
     ) -> None:
         entry = {
             "timestamp": datetime.now().isoformat(),
@@ -48,6 +49,7 @@ class AuditLogger:
             "approved_by": approved_by,
             "status": status,
             "result_summary": result_summary[:500],
+            "platform": platform,
         }
         logger.info(json.dumps(entry, ensure_ascii=False))
 
@@ -68,7 +70,8 @@ class AuditLogger:
         )
 
     def log_approval_decided(
-        self, approval_id: str, decided_by: str, decision: str, command: str
+        self, approval_id: str, decided_by: str, decision: str, command: str,
+        platform: str = "",
     ) -> None:
         self.log(
             user_id=decided_by,
@@ -76,6 +79,7 @@ class AuditLogger:
             approved_by=decided_by,
             command=command,
             status=f"approval_id={approval_id} decision={decision}",
+            platform=platform,
         )
 
     def log_execution_result(
@@ -100,7 +104,8 @@ class AuditLogger:
         )
 
     def log_tool_approval_requested(
-        self, tool_name: str, approval_id: str, risk_level: str
+        self, tool_name: str, approval_id: str, risk_level: str,
+        platform: str = "",
     ) -> None:
         self.log(
             user_id="system",
@@ -108,6 +113,7 @@ class AuditLogger:
             command=f"tool:{tool_name}",
             risk_level=risk_level,
             status=f"approval_id={approval_id}",
+            platform=platform,
         )
 
     def log_tool_executed(

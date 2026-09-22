@@ -7,12 +7,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import re
 import uuid
 from pathlib import Path
 
 from app.agent.cli_loop import claude_cli_loop, _kill_process_tree
+from app.agent.session_sync import detect_cli_session_update, sync_claude_session_to_cli
 from app.audit.logger import audit_logger
 from app.channel.base import UserTarget
 from app.channel.registry import get_channel
@@ -31,7 +33,7 @@ from app.dispatch.helpers import (
 )
 from app.dispatch.sessions import session_manager, skey_for
 from app.models.schemas import Session, TaskStatus
-from app.profiles import discover_profiles, profile_level_models, test_profile
+from app.profiles import discover_profiles, get_active_profile, profile_level_models, test_profile
 from app.state.preferences import preferences_manager
 from config.settings import settings
 
@@ -73,8 +75,6 @@ async def _check_and_run_pending(target: UserTarget) -> bool:
 
     if has_provider and has_level and has_mode:
         session = session_manager.get_user_session(skey_for(target))
-        if session:
-            preferences_manager.save_workspace_config(session.workspace, preferences)
 
         if session and session.pending_prompt.strip():
             pending = session.pending_prompt.strip()
@@ -113,7 +113,12 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
     is_group = target.is_group
     reply = ReplyContext(target)
     channel = get_channel(target.platform)
-    if not await channel.is_allowed(target):
+    allowed_check = channel.is_allowed(target)
+    if inspect.isawaitable(allowed_check):
+        allowed = await allowed_check
+    else:
+        allowed = bool(allowed_check)
+    if not allowed:
         mode = settings.get_allowed_mode()
         if mode == "groups":
             err_msg = (
@@ -262,15 +267,14 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
         )
         return
 
-    # --- /model [haiku|sonnet|opus] / /level: choose model capability level ---
-    if (
-        text_lower == "/model" or text_lower.startswith("/model ")
-        or text_lower == "/level" or text_lower.startswith("/level ")
-    ):
+    # --- /model [haiku|sonnet|opus]: choose model capability level ---
+    if text_lower == "/model" or text_lower.startswith("/model "):
         parts = text.split(None, 1)
         preferences = preferences_manager.get(open_id)
         profiles = discover_profiles()
         valid_levels = ("haiku", "sonnet", "opus")
+        # 当前供应商的 档位->实际模型 映射（profile 内 ANTHROPIC_DEFAULT_*_MODEL）
+        models_map = profile_level_models(preferences.model)
 
         if len(parts) == 2:
             arg = parts[1].strip().lower()
@@ -278,7 +282,10 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
                 preferences.level = arg
                 preferences_manager.save(open_id, preferences)
                 await claude_cli_loop.cancel_and_wait(skey_for(target))
-                await reply.text(f"模型规格已切换为 `{preferences.level}`。")
+                actual = models_map.get(arg, "")
+                await reply.text(
+                    f"模型规格已切换为 `{arg}`" + (f"（`{actual}`）" if actual else "") + "。"
+                )
                 return
             elif arg in profiles:
                 await reply.text(
@@ -288,9 +295,11 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
                 )
                 return
 
-        await reply.text(
-            f"当前模型规格: `{preferences.level or '未选择'}`\n\n"
-            "用法: `/model haiku|sonnet|opus` (也可使用 `/level`)",
+        await reply.view(
+            "level_selection",
+            approval_id=uuid.uuid4().hex[:12],
+            current_model=preferences.level,
+            models_map=models_map,
         )
         return
 
@@ -356,10 +365,10 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
                 await _check_and_run_pending(target)
                 return
 
-        await reply.text(
-            f"当前思考力度: `{preferences.effort or 'CLI 默认'}`\n\n"
-            "用法: `/effort low|medium|high|xhigh|max`\n"
-            "恢复默认: `/effort default`",
+        await reply.view(
+            "effort_selection",
+            approval_id=uuid.uuid4().hex[:12],
+            current_effort=preferences.effort,
         )
         return
 
@@ -438,23 +447,16 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
         else:
             pred_text = "\n🆕 **预计关联会话：** 纯净项目 (发送首条消息时自动分配新 Session)"
 
-        await reply.text(f"📁 工作区已切换：`{session.workspace}`{pred_text}")
+        pref = preferences_manager.get(open_id)
+        profiles = discover_profiles()
+        profile_label = profiles.get(pref.model, {}).get("label", pref.model) or pref.model or "未设置"
+        mode_labels = {"h": "🛡️ 严格模式 (h)", "m": "⚖️ 平衡模式 (m)", "l": "⚡ 全自动模式 (l)"}
+        mode_label = mode_labels.get(pref.mode, pref.mode or "未设置")
 
-        ws_config = preferences_manager.load_workspace_config(resolved_workspace)
-        if ws_config and ws_config.complete:
-            profiles = discover_profiles()
-            profile_label = profiles.get(ws_config.model, {}).get("label", ws_config.model)
-            await reply.view(
-                "ws_config_reuse",
-                approval_id=uuid.uuid4().hex[:12],
-                workspace=resolved_workspace,
-                profile_label=profile_label,
-                level=ws_config.level,
-                mode=ws_config.mode,
-                action_type="switch",
-            )
-        else:
-            preferences_manager.clear(open_id)
+        await reply.text(
+            f"📁 工作区已切换：`{session.workspace}`{pred_text}\n"
+            f"⚙️ 当前配置：供应商 `{profile_label}` | 规格 `{pref.level or '未设置'}` | 审批模式 `{mode_label}`"
+        )
         return
 
     # --- /session [session_id]: list sessions in current workspace and resume one ---
@@ -531,7 +533,7 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
             preferences_manager.clear(open_id)
             await reply.text(
                 f"🔑 已切换到 Claude Session `{session.claude_session_id}`。\n"
-                "运行参数已清空，请依次设置 `/model`、`/level`、`/mode`。",
+                "运行参数已清空，请依次设置 `/model`、`/mode`。",
             )
         return
 
@@ -564,59 +566,26 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
         await claude_cli_loop.cancel_and_wait(skey_for(target))
         session = session_manager.reset_user_session(skey_for(target))
 
-        # Create a cli-born stub session via PTY so the local claude picker
-        # can see this session (SDK-launched sessions get tagged sdk-cli and
-        # are filtered out of the picker). On failure, fall back to legacy
-        # behavior — first message will launch with sdk-cli.
-        stub_session_id: str | None = None
-        stub_error: str | None = None
+        # 跨平台（Mac/Windows）原生生成可在终端 resume 中看到的会话 ID
         try:
-            from app.agent.pty_stub import create_cli_born_session
-            stub_session_id = create_cli_born_session(session.workspace)
-        except Exception as e:
-            stub_error = f"{type(e).__name__}: {e}"
-            logger.warning("PTY stub creation failed: %s", stub_error)
-
-        if stub_session_id:
-            session.claude_session_id = stub_session_id
+            from app.agent.session_sync import create_cli_born_session
+            session.claude_session_id = create_cli_born_session(session.workspace)
             session_manager.save_session(session)
-            session_line = (
-                f"🔑 Claude Session: `{stub_session_id}`\n"
-                f"✅ 已创建 cli-born stub，本机 picker 可见"
-            )
-        else:
-            session_line = (
-                f"🔑 Claude Session: `待生成 (首条消息后以 sdk-cli 启动)`\n"
-                f"⚠️ PTY stub 创建失败：{stub_error}\n"
-                f"   会话仍可正常使用"
-            )
+        except Exception as e:
+            logger.warning("Session sync init failed: %s", e)
 
-        ws_config = preferences_manager.load_workspace_config(session.workspace)
-        if ws_config and ws_config.complete:
-            profiles = discover_profiles()
-            profile_label = profiles.get(ws_config.model, {}).get("label", ws_config.model)
-            await reply.text(
-                f"✨ 新会话已重置。\n"
-                f"📁 工作区: `{session.workspace}`\n"
-                f"{session_line}",
-            )
-            await reply.view(
-                "ws_config_reuse",
-                approval_id=uuid.uuid4().hex[:12],
-                workspace=session.workspace,
-                profile_label=profile_label,
-                level=ws_config.level,
-                mode=ws_config.mode,
-                action_type="new",
-            )
-        else:
-            preferences_manager.clear(open_id)
-            await reply.text(
-                f"✨ 新会话已重置。\n"
-                f"📁 工作区: `{session.workspace}`\n"
-                f"{session_line}\n"
-                "运行参数已清空，请依次设置 `/model`、`/level`、`/mode`。",
-            )
+        pref = preferences_manager.get(open_id)
+        profiles = discover_profiles()
+        profile_label = profiles.get(pref.model, {}).get("label", pref.model) or pref.model or "未设置"
+        mode_labels = {"h": "🛡️ 严格模式 (h)", "m": "⚖️ 平衡模式 (m)", "l": "⚡ 全自动模式 (l)"}
+        mode_label = mode_labels.get(pref.mode, pref.mode or "未设置")
+
+        await reply.text(
+            f"✨ **新会话已就绪**\n"
+            f"📁 工作区：`{session.workspace}`\n"
+            f"⚙️ 当前配置：供应商 `{profile_label}` | 规格 `{pref.level or '未设置'}` | 审批模式 `{mode_label}`\n\n"
+            f"💡 全局配置已生效，直接发送消息即可开始对话。"
+        )
         return
 
     # --- /clean: remove old session files, keep only current ---
@@ -873,6 +842,26 @@ async def _run_claude(
             session.chat_id = chat_id
             session_manager.save_session(session)
 
+        # 自动感知并对齐电脑端最新 CLI 会话（电脑端创建/更新会话向飞书端同步）
+        if not resume_session_id and session.workspace:
+            try:
+                update_info = detect_cli_session_update(session.workspace, session.claude_session_id)
+                if update_info.get("has_update"):
+                    old_sid = session.claude_session_id
+                    new_sid = update_info["latest_session_id"]
+                    logger.info("Detected newer CLI session %s (old: %s) for user %s", new_sid, old_sid, open_id)
+                    if claude_cli_loop.is_running(skey_for(target)):
+                        await claude_cli_loop.cancel_and_wait(skey_for(target))
+                    session.claude_session_id = new_sid
+                    session.context_tokens = 0
+                    session_manager.save_session(session)
+                    summary_hint = f"（最新电脑端对话：`{update_info['summary'][:30]}`）" if update_info.get("summary") else ""
+                    await reply.text(
+                        f"ℹ️ 感知到电脑端本地更新了会话，已自动为您对齐最新会话上下文{summary_hint}。"
+                    )
+            except Exception as e:
+                logger.warning("Failed to check CLI session update: %s", e)
+
         preferences = preferences_manager.get(open_id)
         profiles = discover_profiles()
 
@@ -891,6 +880,25 @@ async def _run_claude(
                 mode=preferences.mode,
             )
             return
+
+        # 默认配置继承：未配置时自动使用系统默认值（零门槛冷启动，免去强制三道卡片阻塞）
+        default_profile = get_active_profile()
+        if default_profile not in profiles and profiles:
+            default_profile = next(iter(profiles.keys()))
+
+        applied_defaults = False
+        if preferences.model not in profiles and default_profile:
+            preferences.model = default_profile
+            applied_defaults = True
+        if preferences.level not in ("haiku", "sonnet", "opus"):
+            preferences.level = getattr(settings, "claude_default_model", "") or "sonnet"
+            applied_defaults = True
+        if preferences.mode not in ("h", "m", "l"):
+            preferences.mode = getattr(settings, "approval_mode", "") or "m"
+            applied_defaults = True
+
+        if applied_defaults:
+            preferences_manager.save(open_id, preferences)
 
         need_provider = preferences.model not in profiles
         need_level = preferences.level not in ("haiku", "sonnet", "opus")
@@ -961,7 +969,9 @@ async def _run_claude(
         # /new and workspace changes are the explicit reset operations.
         if agent_result.session_id:
             session.claude_session_id = agent_result.session_id
-            append_to_claude_history(session.workspace, agent_result.session_id, prompt)
+            # 微延时确保底层 CLI 进程完成全部流式写盘，避免落盘竞争
+            await asyncio.sleep(0.15)
+            sync_claude_session_to_cli(session.workspace, agent_result.session_id, prompt)
         if agent_result.input_tokens > 0:
             session.context_tokens = agent_result.input_tokens
         # NOTE: agent_messages intentionally not appended — claude already

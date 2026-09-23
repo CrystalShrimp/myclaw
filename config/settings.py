@@ -20,8 +20,8 @@ class Settings(BaseSettings):
     claude_default_model: str = "sonnet"
     claude_data_dir: str = ""
 
-    # Workspace
-    default_workspace: str = "D:\\projects"
+    # Workspace（Claude Code 默认代码工程目录；未配置时跨平台智能回退）
+    default_workspace: str = ""
 
     # Approval
     approval_timeout: int = 600           # Model selection card timeout (10 min)
@@ -122,21 +122,30 @@ class Settings(BaseSettings):
         return [g.strip() for g in self.allowed_group_ids.split(",") if g.strip()]
 
     def get_default_workspace(self) -> str:
-        """Return the configured workspace, or the process cwd when unset."""
+        """返回已配置的工作空间路径，若未设置或不存在则优雅跨平台回退。"""
         configured = self.default_workspace.strip()
         if configured:
             path = Path(configured).expanduser()
-            if path.exists():
+            try:
+                path.mkdir(parents=True, exist_ok=True)
                 return str(path.resolve())
-        # 未配置或指定路径不存在时，优雅回退到系统可用目录
+            except Exception:
+                if path.exists():
+                    return str(path.resolve())
+
+        # 未配置或指定路径不可用时，优雅回退到系统可用目录
         if sys.platform != "win32":
             candidate = Path.home() / "projects"
-            if candidate.is_dir():
-                return str(candidate.resolve())
+            candidate.mkdir(parents=True, exist_ok=True)
+            return str(candidate.resolve())
         else:
-            candidate = Path("D:\\projects")
-            if candidate.is_dir():
-                return str(candidate.resolve())
+            preferred = Path("D:\\projects") if Path("D:\\").exists() else Path("C:\\projects")
+            try:
+                preferred.mkdir(parents=True, exist_ok=True)
+                return str(preferred.resolve())
+            except Exception:
+                pass
+
         return str(Path.cwd().resolve())
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}

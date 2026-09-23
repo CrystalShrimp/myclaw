@@ -45,11 +45,131 @@ def run_cmd(cmd: list[str], cwd: Path | None = None, check: bool = False, env: d
     return res.returncode
 
 
-def check_prerequisites():
-    """预检基础环境（Node.js、.env、Claude CLI、模型配置）。"""
-    print("=" * 50)
-    print("           MyClaw 环境自检与依赖检查")
-    print("=" * 50)
+def get_env_value(key: str) -> str:
+    """读取 .env 中的指定配置项。"""
+    env_file = ROOT_DIR / ".env"
+    if not env_file.exists():
+        return ""
+    try:
+        for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                k, v = line.split("=", 1)
+                if k.strip() == key:
+                    return v.strip().strip("'\"")
+    except Exception:
+        pass
+    return ""
+
+
+def upsert_env_key(key: str, value: str):
+    """更新或插入 .env 文件中的配置项。"""
+    env_file = ROOT_DIR / ".env"
+    if not env_file.exists():
+        example_file = ROOT_DIR / "config" / "env.example"
+        if example_file.exists():
+            shutil.copy(example_file, env_file)
+        else:
+            env_file.write_text(f"{key}={value}\n", encoding="utf-8")
+            return
+
+    try:
+        lines = env_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        found = False
+        new_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped.startswith("#") and "=" in stripped:
+                k, _ = stripped.split("=", 1)
+                if k.strip() == key:
+                    new_lines.append(f"{key}={value}")
+                    found = True
+                    continue
+            new_lines.append(line)
+
+        if not found:
+            new_lines.append(f"{key}={value}")
+
+        env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    except Exception as e:
+        print(f"[!] 写入 .env 失败: {e}")
+
+
+def get_recommended_workspace() -> Path:
+    """获取跨平台智能推荐的工作空间目录。"""
+    if sys.platform != "win32":
+        return Path.home() / "projects"
+    # Windows: 如果存在 D 盘，推荐 D:\projects，否则推荐 C:\projects
+    if Path("D:\\").exists():
+        return Path("D:\\projects")
+    return Path("C:\\projects")
+
+
+def confirm_workspaces():
+    """【Step 1/4】运行目录与工作空间确认 (Workspace)。"""
+    print("\n" + "=" * 60)
+    print("      【Step 1/4】运行目录与工作空间确认 (Workspace)")
+    print("=" * 60)
+    print()
+    print("  [1] MyClaw 程序运行目录 (只读):")
+    print(f"      {ROOT_DIR.resolve()}")
+    print("      >> 说明: 用于承载网关服务、系统核心配置（.env）与运行日志。\n")
+
+    # 1. 确保 .env 基础文件存在
+    env_file = ROOT_DIR / ".env"
+    example_file = ROOT_DIR / "config" / "env.example"
+    if not env_file.exists():
+        if example_file.exists():
+            shutil.copy(example_file, env_file)
+            print("[OK] 已初始化生成 .env 配置文件。")
+        else:
+            env_file.touch()
+
+    # 2. 获取当前已配置或智能推荐路径
+    configured = get_env_value("DEFAULT_WORKSPACE")
+    if configured:
+        rec_path = Path(configured).expanduser()
+    else:
+        rec_path = get_recommended_workspace()
+
+    print("  [2] Claude Code 默认工作空间 (AI 操盘区):")
+    print(f"      当前推荐: {rec_path}")
+    print("      >> 说明: AI 编写业务代码、读取项目、执行终端指令的实际工程文件夹。")
+    print()
+
+    choice = input("[?] 是否直接采用此工作目录？[Y/N] (直接回车 = 推荐路径): ").strip().lower()
+    final_ws = rec_path
+    if choice == "n":
+        while True:
+            custom_input = input("请输入您希望 AI 操盘的代码工程目录绝对路径: ").strip().strip("'\"")
+            if not custom_input:
+                print("[!] 路径不能为空，请重新输入。")
+                continue
+            try:
+                final_ws = Path(custom_input).expanduser().resolve()
+                break
+            except Exception as e:
+                print(f"[!] 路径格式无效 ({e})，请重新输入。")
+
+    # 自动在磁盘创建目标目录
+    try:
+        final_ws.mkdir(parents=True, exist_ok=True)
+        print(f"[OK] 默认工作空间已就绪: {final_ws}")
+    except Exception as e:
+        print(f"[!] 创建目录遇到问题 ({e})，但已记录该路径。")
+
+    # 写入 .env 文件
+    upsert_env_key("DEFAULT_WORKSPACE", str(final_ws))
+
+
+def check_environment():
+    """【Step 2/4】基础运行环境检测 (Environment)。"""
+    print("\n" + "=" * 60)
+    print("          【Step 2/4】运行环境自检与依赖 (Environment)")
+    print("=" * 60)
+    print()
 
     # 1. 检查 Node.js
     node_path = shutil.which("node")
@@ -59,45 +179,47 @@ def check_prerequisites():
     else:
         try:
             ver = subprocess.check_output(["node", "-v"], text=True).strip()
-            print(f"[OK] Node.js 环境: {ver}")
+            print(f"[OK] Node.js 运行时环境: {ver}")
         except Exception:
-            print("[OK] 检测到 Node.js")
+            print("[OK] 检测到 Node.js 运行时。")
 
-    # 2. 检查 .env
-    env_file = ROOT_DIR / ".env"
-    example_file = ROOT_DIR / "config" / "env.example"
-    if not env_file.exists():
-        if example_file.exists():
-            shutil.copy(example_file, env_file)
-            print("[OK] 已从 config/env.example 初始化生成 .env 文件。")
-        else:
-            print("[!] 未找到 config/env.example，建议手动创建 .env 文件。")
-    else:
-        print("[OK] .env 配置文件已就绪。")
-
-    # 3. 检查 Claude Code CLI
+    # 2. 检查 Claude Code CLI
     claude_path = shutil.which("claude")
     if not claude_path:
-        print("[!] 提示: 未检测到 Claude Code CLI。")
-        choice = input("[?] 是否立即通过 npm 全局安装 Claude CLI？[Y/N] (默认 N): ").strip().lower()
+        print("[!] 提示: 未检测到全局 Claude Code CLI。")
+        choice = input("[?] 是否立即通过国内镜像全局安装 Claude CLI？[Y/N] (默认 N): ").strip().lower()
         if choice == "y":
             print("[*] 正在安装 @anthropic-ai/claude-code ...")
             run_cmd(["npm", "install", "-g", "@anthropic-ai/claude-code", "--registry=https://registry.npmmirror.com"])
     else:
         print("[OK] Claude Code CLI 已就绪。")
 
-    # 4. 检查模型配置
+
+def check_or_setup_models():
+    """【Step 3/4】模型供应商配置 (Model & Provider)。"""
+    print("\n" + "=" * 60)
+    print("      【Step 3/4】模型与供应商配置 (Model & Provider)")
+    print("=" * 60)
+    print()
+
     active_profile_file = ROOT_DIR / "config" / "active_profile"
     has_profile = False
+    current_model = ""
     if active_profile_file.exists():
         p_name = active_profile_file.read_text(encoding="utf-8").strip()
-        if (ROOT_DIR / "config" / f"settings_{p_name}.json").exists():
+        setting_file = ROOT_DIR / "config" / f"settings_{p_name}.json"
+        if setting_file.exists():
             has_profile = True
-            print(f"[OK] 当前生效模型供应商: {p_name}")
+            current_model = p_name
 
-    if not has_profile:
-        print("\n[!] 提示: 尚未配置生效的模型供应商。")
-        c = input("[?] 是否立即配置模型供应商？[Y/N] (默认 Y): ").strip().lower()
+    if has_profile:
+        print(f"[OK] 当前生效模型供应商: {current_model}（已配置）")
+        c = input("[?] 是否需要调整或重新配置模型供应商？[y/N] (直接回车 = 保持当前): ").strip().lower()
+        if c == "y":
+            run_cmd([sys.executable, str(ROOT_DIR / "scripts" / "manage_models.py")])
+    else:
+        print("[!] 提示: 尚未配置生效的模型供应商（如智谱 GLM、DeepSeek、Kimi、Claude 官方等）。")
+        c = input("[?] 是否立即配置模型供应商 API Key？[Y/N] (直接回车 = 是): ").strip().lower()
         if c in ("", "y"):
             run_cmd([sys.executable, str(ROOT_DIR / "scripts" / "manage_models.py")])
 
@@ -209,11 +331,11 @@ def configure_autostart():
 
 
 def main_menu():
-    """主配置中心菜单。"""
+    """【Step 4/4】消息平台接入与配置中心。"""
     while True:
-        print("\n" + "=" * 46)
-        print("                 MyClaw 配置中心")
-        print("=" * 46)
+        print("\n" + "=" * 60)
+        print("    【Step 4/4】消息平台接入与配置中心 (Platform Access)")
+        print("=" * 60)
         print("\n【飞书接入】")
         print(" 1. 配置飞书 - 个人用（仅创建者可用，不改变应用可用范围）")
         print(" 2. 配置飞书 - 公用（可用范围全员，支持群成员一键导入白名单）")
@@ -278,5 +400,9 @@ def finish_setup():
 
 if __name__ == "__main__":
     os.chdir(ROOT_DIR)
-    check_prerequisites()
+    # 4 步极简引导流
+    confirm_workspaces()
+    check_environment()
+    check_or_setup_models()
     main_menu()
+

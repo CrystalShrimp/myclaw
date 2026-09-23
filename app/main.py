@@ -88,9 +88,10 @@ async def lifespan(app: FastAPI):
     logger.info("myclaw starting... (channels: %s)", ",".join(enabled) or "(none)")
     logger.info("Default workspace: %s", workspace)
     logger.info(
-        "Access mode: %s | Allowed users: %s | Allowed groups: %s",
+        "Access mode: %s | Feishu allowed: %s | WeCom allowed: %s | Allowed groups: %s",
         settings.get_allowed_mode(),
-        settings.get_allowed_users() or "(all)",
+        settings.get_allowed_users_for("feishu") or "(all)",
+        settings.get_allowed_users_for("wecom") or "(all)",
         settings.get_allowed_group_ids() or "(none)",
     )
     logger.info("Claude CLI: %s", settings.claude_cli_path)

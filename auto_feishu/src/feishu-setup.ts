@@ -1243,7 +1243,9 @@ async function openAppWorkbench(ctx: StepContext): Promise<void> {
 interface StartedAppCandidate {
   name: string;
   status: string;
+  appId?: string;
   containerText: string;
+  isHistorical?: boolean;
 }
 
 function isNonInteractivePrompt(): boolean {
@@ -1427,125 +1429,133 @@ async function listStartedAppCandidates(page: Page): Promise<StartedAppCandidate
   return items;
 }
 
-async function listStartedAppCandidatesV2(page: Page): Promise<StartedAppCandidate[]> {
-  const scanPromise = (async () => {
-    const normalize = (value: string): string => value.replace(/\s+/g, " ").trim();
-    const acceptedStatuses = ["已启动", "已启用"];
-    const candidates: StartedAppCandidate[] = [];
-    const seen = new Set<string>();
+async function listAllSelfBuiltAppCandidates(
+  page: Page,
+  historicalAppId?: string | null,
+  historicalAppName?: string | null,
+  logger?: Logger
+): Promise<StartedAppCandidate[]> {
+  try {
+    // 纯字符串形式执行 evaluate，彻底避免 tsx/esbuild 注入 __name 导致 ReferenceError
+    const scanScript = `
+      (() => {
+        const results = [];
+        const seen = new Set();
 
-    const appCards = page.locator(".app-card, [class*='app-card']");
-    const cardCount = Math.min(await appCards.count().catch(() => 0), 50);
+        // 1. 优先从带有 /app/cli_ 的应用入口链接中直接提取
+        const appLinks = Array.from(document.querySelectorAll('a[href*="/app/cli_"]'));
+        for (const a of appLinks) {
+          const href = a.getAttribute('href') || '';
+          const m = href.match(/cli_[a-zA-Z0-9]+/);
+          if (!m) continue;
+          const appId = m[0];
+          if (seen.has(appId)) continue;
+          seen.add(appId);
 
-    for (let index = 0; index < cardCount; index += 1) {
-      const card = appCards.nth(index);
-      let cardText = "";
+          const lines = (a.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean);
+          const name = lines[0] || '未命名应用';
+          const status = lines.length > 1 ? lines[1] : '已创建';
 
-      try {
-        if (!(await card.isVisible())) {
-          continue;
+          results.push({
+            name,
+            status,
+            appId,
+            containerText: (a.innerText || '').replace(/\\s+/g, ' ').trim()
+          });
         }
-        cardText = normalize(await card.innerText());
-      } catch {
-        continue;
-      }
 
-      if (!cardText || !(await hasExactStartedTag(card))) {
-        continue;
-      }
+        // 2. 兜底策略：若没有 a 链接，扫描所有卡片容器
+        if (results.length === 0) {
+          const allCandidates = Array.from(document.querySelectorAll('*')).filter(el => {
+            const t = el.innerText || '';
+            return (t.includes('所有者：') || t.includes('最新动态：') || t.includes('所有者:')) && el.children.length <= 12;
+          });
 
-      const title = await card
-        .locator(".app-card__title, [class*='app-card__title']")
-        .first()
-        .innerText()
-        .then((value) => normalize(value))
-        .catch(() => "");
-      const status = await card
-        .locator(".ud__tag__content, [class*='tag__content']")
-        .first()
-        .innerText()
-        .then((value) => normalize(value))
-        .catch(() => "");
-      if (!acceptedStatuses.includes(status)) {
-        continue;
-      }
-      const candidateName =
-        title ||
-        cardText
-          .split(/\n| {2,}/)
-          .map((part) => normalize(part))
-          .find(
-            (part) =>
-              part !== "已启动" &&
-              !["创建应用", "创建企业自建应用", "企业自建应用", "开发者后台"].includes(part) &&
-              part.length >= 2 &&
-              part.length <= 80
-          ) ||
-        "";
+          for (const el of allCandidates) {
+            const hasChild = allCandidates.some(other => other !== el && el.contains(other));
+            if (hasChild) continue;
 
-      if (!candidateName) {
-        continue;
-      }
+            const lines = (el.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean);
+            if (lines.length >= 2) {
+              const name = lines[0];
+              const status = lines[1];
+              if (!seen.has(name) && !name.includes('所有者') && !name.includes('最新动态')) {
+                seen.add(name);
+                let appId = '';
+                const m = (el.innerHTML || '').match(/cli_[a-zA-Z0-9]+/);
+                if (m) appId = m[0];
 
-      const key = `${candidateName}__${cardText}`;
-      if (seen.has(key)) {
-        continue;
-      }
+                results.push({
+                  name,
+                  status,
+                  appId,
+                  containerText: el.innerText.replace(/\\s+/g, ' ').trim()
+                });
+              }
+            }
+          }
+        }
 
-      seen.add(key);
-      candidates.push({
-        name: candidateName,
-        status,
-        containerText: cardText
-      });
+        return results;
+      })()
+    `;
+
+    const rawCandidates = await page.evaluate(scanScript) as Array<{
+      name: string;
+      status: string;
+      appId?: string;
+      containerText: string;
+    }>;
+
+    return rawCandidates.map((item) => {
+      const isHistorical = Boolean(
+        (historicalAppId && item.appId && item.appId === historicalAppId) ||
+        (historicalAppName && item.name === historicalAppName)
+      );
+      return {
+        ...item,
+        isHistorical
+      };
+    });
+  } catch (error) {
+    if (logger) {
+      logger.debug(`listAllSelfBuiltAppCandidates 异常: ${String(error)}`);
     }
-
-    return candidates.slice(0, 10);
-  })();
-
-  const timeoutPromise = new Promise<StartedAppCandidate[]>((resolve) =>
-    setTimeout(() => resolve([]), 1500)
-  );
-
-  return Promise.race([scanPromise, timeoutPromise]);
+    return [];
+  }
 }
 
-async function chooseStartedApp(ctx: StepContext): Promise<StartedAppCandidate | null> {
-  await ctx.page.waitForLoadState("domcontentloaded").catch(() => undefined);
-  await ctx.page.waitForTimeout(1000);
-
-  const candidates = await listStartedAppCandidatesV2(ctx.page);
-  if (candidates.length === 0) {
-    const pageText = await ctx.page
-      .locator("body")
-      .innerText()
-      .then((value) => value.replace(/\s+/g, " ").trim().slice(0, 500))
-      .catch(() => "");
-    if (pageText) {
-      ctx.logger.debug(`应用管理页文本片段：${pageText}`);
-    }
-    return null;
-  }
-
-  ctx.logger.info(`检测到 ${candidates.length} 个“已启动”的飞书实例。`);
+async function chooseSelfBuiltApp(
+  ctx: StepContext,
+  candidates: StartedAppCandidate[]
+): Promise<StartedAppCandidate | null> {
+  ctx.logger.info(`检测到当前企业账号下有 ${candidates.length} 个自建应用：`);
+  let defaultIndex = 1;
   candidates.forEach((candidate, index) => {
-    ctx.logger.info(`${index + 1}. ${candidate.name} | ${candidate.status} | ${candidate.containerText}`);
+    const num = index + 1;
+    const idDesc = candidate.appId ? ` (${candidate.appId})` : "";
+    const histDesc = candidate.isHistorical ? " [上次配置]" : "";
+    if (candidate.isHistorical) {
+      defaultIndex = num;
+    }
+    ctx.logger.info(`  ${num}. ${candidate.name} [${candidate.status}]${idDesc}${histDesc}`);
   });
+  ctx.logger.info(`  0. 创建全新应用 (默认名称: ${ctx.config.appName})`);
 
   if (isNonInteractivePrompt()) {
-    ctx.logger.info(`当前为非交互环境，自动复用第 1 个“已启动”实例：${candidates[0].name}`);
-    return candidates[0];
-  }
-
-  ctx.logger.info(`检测到页面上有 ${candidates.length} 个已启动的飞书实例，请在下方确认是否复用：`);
-  const shouldReuse = await promptYesNo(ctx.prompt, "是否复用一个已启动的飞书实例？", true);
-  if (!shouldReuse) {
-    return null;
+    const chosen = candidates[defaultIndex - 1];
+    ctx.logger.info(`当前为非交互环境，自动选用应用：${chosen.name}`);
+    return chosen;
   }
 
   while (true) {
-    const answer = await promptText(ctx.prompt, `请输入要复用的实例序号（1-${candidates.length}），直接回车则取消复用`);
+    const promptMsg = `请选择要配置的应用序号 [0-${candidates.length}] (直接回车默认 ${defaultIndex}): `;
+    const answer = (await promptText(ctx.prompt, promptMsg)).trim();
     if (!answer) {
+      return candidates[defaultIndex - 1];
+    }
+
+    if (answer === "0") {
       return null;
     }
 
@@ -1554,13 +1564,13 @@ async function chooseStartedApp(ctx: StepContext): Promise<StartedAppCandidate |
       return candidates[selectedIndex - 1];
     }
 
-    ctx.logger.warn("输入无效，请输入正确的序号。");
+    ctx.logger.warn("输入无效，请输入列表中正确的应用序号。");
   }
 }
 
 async function openAppByName(ctx: StepContext, appName: string, preferStarted = false, expectedStatus?: string): Promise<boolean> {
   if (preferStarted) {
-    const cards = ctx.page.locator(".app-card, [class*='app-card']").filter({ hasText: appName });
+    const cards = ctx.page.locator(".app-card, [class*='app-card'], [class*='appItem']").filter({ hasText: appName });
     const count = Math.min(await cards.count(), 20);
 
     for (let index = 0; index < count; index += 1) {
@@ -1573,24 +1583,21 @@ async function openAppByName(ctx: StepContext, appName: string, preferStarted = 
         continue;
       }
 
-      if (!(await hasExactStartedTag(card))) {
-        continue;
-      }
       if (expectedStatus) {
         const actualStatus = await card
-          .locator(".ud__tag__content, [class*='tag__content']")
+          .locator(".ud__tag__content, [class*='tag__content'], [class*='tag'], [class*='status']")
           .first()
           .innerText()
           .then((value) => value.trim())
           .catch(() => "");
-        if (actualStatus !== expectedStatus) {
+        if (actualStatus && actualStatus !== expectedStatus) {
           continue;
         }
       }
 
       const locator = await firstVisibleLocator(
         [
-          card.locator(".app-card__title, [class*='app-card__title']"),
+          card.locator(".app-card__title, [class*='app-card__title'], [class*='app-title']"),
           card.getByText(toRegex(appName)),
           card
         ],
@@ -1623,118 +1630,97 @@ async function openAppByName(ctx: StepContext, appName: string, preferStarted = 
 }
 
 async function createOrOpenApp(ctx: StepContext): Promise<void> {
-  if (ctx.result.appId) {
-    const reuseHistorical = isNonInteractivePrompt()
-      ? true
-      : await promptYesNo(
-        ctx.prompt,
-        `检测到历史应用记录 (${ctx.result.appId})，是否确认复用该历史应用？`,
-        true
-      );
-
-    if (reuseHistorical) {
-      const appUrl = "https://open.feishu.cn/app/" + ctx.result.appId + "/baseinfo";
-      ctx.logger.info("确认复用历史应用续跑：" + ctx.result.appId);
-      await ctx.page.goto(appUrl, { waitUntil: "domcontentloaded" });
-
-      const inaccessible = await waitForAnyText(
-        ctx.page,
-        ["无权访问", "应用不存在", "页面不存在", "抱歉，您无权访问此页面"],
-        Math.min(ctx.config.timeoutMs, 4000)
-      );
-      const backendSignal = inaccessible
-        ? null
-        : await waitForAnyText(ctx.page, APP_BACKEND_SIGNALS, ctx.config.timeoutMs);
-
-      if (backendSignal) {
-        return;
-      }
-
-      ctx.logger.warn(
-        "历史 App ID 对当前登录账号不可用，已放弃该状态并返回应用列表：" + ctx.result.appId
-      );
-    } else {
-      ctx.logger.info(`用户放弃复用历史应用 ${ctx.result.appId}，重置记录并返回应用列表...`);
-    }
-
-    ctx.result.appId = null;
-    ctx.result.maskedSecret = null;
-    ctx.result.existingAppReused = false;
-    ctx.result.existingStartedAppChosen = false;
-    ctx.result.reusedAppName = null;
-    ctx.result.permissionsImported = false;
-    ctx.result.botEnabled = false;
-    ctx.result.eventSubscriptionConfigured = false;
-    ctx.result.published = false;
-    await persistResult(ctx.config, ctx.result);
-  }
   ctx.logger.info("正在打开飞书开放平台应用列表页...");
   await openAppWorkbench(ctx);
 
   ctx.logger.info("正在切换到“企业自建应用”页签...");
   await clickSelfBuiltAppsTab(ctx).catch(() => false);
+  await ctx.page.waitForLoadState("domcontentloaded").catch(() => undefined);
+  await ctx.page.waitForTimeout(1500);
 
-  ctx.logger.info("正在检测是否有已启动状态的应用实例...");
-  const startedApp = ctx.config.reuseStartedApp ? await chooseStartedApp(ctx) : null;
-  if (startedApp) {
-    const opened = await openAppByName(ctx, startedApp.name, true, startedApp.status);
+  // 等待页面卡片或创建按钮元素就绪
+  await ctx.page.waitForSelector(".app-card, [class*='app-card'], a[href*='/app/'], button:has-text('创建')", { timeout: 8000 }).catch(() => undefined);
+  await ctx.page.waitForTimeout(1000);
+
+  ctx.logger.info("正在全量扫描账号下的企业自建应用...");
+  const historicalAppId = ctx.result.appId;
+  const historicalAppName = ctx.result.reusedAppName || ctx.result.appName;
+
+  let candidates: StartedAppCandidate[] = [];
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    candidates = await listAllSelfBuiltAppCandidates(ctx.page, historicalAppId, historicalAppName);
+    if (candidates.length > 0) {
+      break;
+    }
+    if (attempt < 3) {
+      ctx.logger.debug(`第 ${attempt} 次扫描未获取到应用，等待 1.5 秒重试...`);
+      await ctx.page.waitForTimeout(1500);
+    }
+  }
+
+  let chosenApp: StartedAppCandidate | null = null;
+  if (candidates.length > 0) {
+    chosenApp = await chooseSelfBuiltApp(ctx, candidates);
+  } else {
+    ctx.logger.info("当前企业账号下未检测到自建应用，将进入创建新应用流程。");
+  }
+
+  if (chosenApp) {
+    const idDisplay = chosenApp.appId ? ` (${chosenApp.appId})` : "";
+    ctx.logger.info(`确认选用自建应用：“${chosenApp.name}”${idDisplay}...`);
+    let opened = false;
+    if (chosenApp.appId) {
+      const targetUrl = `https://open.feishu.cn/app/${chosenApp.appId}/baseinfo`;
+      ctx.logger.debug(`正在尝试直达应用后台: ${targetUrl}`);
+      await ctx.page.goto(targetUrl, { waitUntil: "domcontentloaded" }).catch(() => undefined);
+      const signal = await waitForAnyText(ctx.page, APP_BACKEND_SIGNALS, Math.min(ctx.config.timeoutMs, 5000));
+      if (signal) opened = true;
+    }
+
     if (!opened) {
-      await manualTakeover(ctx, "进入已启动飞书实例后台", [
-        `请在页面中手动打开已启动实例“${startedApp.name}”。`,
-        "确认页面左侧已出现应用后台菜单后，再回到终端。"
+      opened = await openAppByName(ctx, chosenApp.name, true, chosenApp.status);
+    }
+    if (!opened) {
+      opened = await openAppByName(ctx, chosenApp.name, false);
+    }
+
+    if (!opened) {
+      await manualTakeover(ctx, "进入自建应用后台", [
+        `请在页面中手动打开应用“${chosenApp.name}”。`,
+        "确认页面左侧出现应用后台菜单后，再回到终端。"
       ]);
     }
 
-    ctx.result.appName = startedApp.name;
+    ctx.result.appName = chosenApp.name;
     ctx.result.existingAppReused = true;
     ctx.result.existingStartedAppChosen = true;
-    ctx.result.reusedAppName = startedApp.name;
+    ctx.result.reusedAppName = chosenApp.name;
+    if (chosenApp.appId) {
+      ctx.result.appId = chosenApp.appId;
+    }
+
     const appSignal = await waitForAnyText(ctx.page, APP_BACKEND_SIGNALS, ctx.config.timeoutMs);
     if (!appSignal) {
-      await manualTakeover(ctx, "进入已启动飞书实例后台", [
-        `请在页面中手动打开应用“${startedApp.name}”。`,
+      await manualTakeover(ctx, "确认进入应用后台", [
+        `请确认页面已进入应用“${chosenApp.name}”后台。`,
         "确认页面左侧出现应用后台菜单后，再回到终端。"
       ]);
     }
     return;
   }
 
-  const sameNameCardCount = await countVisibleAppCardsByName(ctx.page, ctx.config.appName);
-  if (ctx.config.reuseStartedApp && sameNameCardCount > 1) {
-    throw new Error(`检测到 ${sameNameCardCount} 个同名应用“${ctx.config.appName}”，但没有锁定到“已启动”标签，已停止自动选择。`);
-  }
-
-  ctx.logger.info(`正在扫描“${ctx.config.appName}”已有应用卡片...`);
-  const existingApp = await firstVisibleLocator([ctx.page.getByText(toRegex(ctx.config.appName))], 3000);
-  if (existingApp) {
-    ctx.logger.info(`检测到同名已有应用“${ctx.config.appName}”，请在下方确认是否复用：`);
-    const shouldReuse = isNonInteractivePrompt()
-      ? true
-      : await promptYesNo(
-        ctx.prompt,
-        `检测到账号下已存在应用“${ctx.config.appName}”，是否复用该应用？`,
-        true
-      );
-
-    if (shouldReuse) {
-      ctx.logger.info(`确认复用已有应用：${ctx.config.appName}`);
-      await existingApp.click({ timeout: ctx.config.timeoutMs });
-      ctx.result.existingAppReused = true;
-      ctx.result.reusedAppName = ctx.config.appName;
-      const appSignal = await waitForAnyText(ctx.page, APP_BACKEND_SIGNALS, ctx.config.timeoutMs);
-      if (!appSignal) {
-        await manualTakeover(ctx, "进入已有应用后台", [
-          `请在页面中手动打开应用“${ctx.config.appName}”。`,
-          "确认页面左侧出现应用后台菜单后，再回到终端。"
-        ]);
-      }
-      return;
-    }
-
-    ctx.logger.info(`用户选择不复用已有应用“${ctx.config.appName}”，将继续进入创建新应用流程...`);
-  } else {
-    ctx.logger.info(`未在当前账号下扫描到已有应用“${ctx.config.appName}”，即将进入创建新应用表单...`);
-  }
+  // 用户选择 0 创建新应用，或账号下无已有应用
+  ctx.logger.info("即将进入创建全新企业自建应用流程...");
+  ctx.result.appId = null;
+  ctx.result.maskedSecret = null;
+  ctx.result.existingAppReused = false;
+  ctx.result.existingStartedAppChosen = false;
+  ctx.result.reusedAppName = null;
+  ctx.result.permissionsImported = false;
+  ctx.result.botEnabled = false;
+  ctx.result.eventSubscriptionConfigured = false;
+  ctx.result.published = false;
+  await persistResult(ctx.config, ctx.result);
 
   const createClicked = (await openCreateSelfBuiltAppEntry(ctx)) || (await clickByCandidates(
     ctx.page,
@@ -2386,21 +2372,49 @@ async function verifyPermissionsLive(ctx: StepContext): Promise<{ ok: boolean; d
 }
 
 async function verifyPublishLive(ctx: StepContext): Promise<{ ok: boolean; detail: string }> {
-  // ok=true 表示"无待发布修改"可跳过发版；ok=false 表示后台挂着
-  // "版本发布后，当前修改方可生效"提示（如重新添加的事件还没随版本生效）。
+  // ok=true 表示"已发布且无待发布修改"可跳过发版；其余一律走发版流程。
+  // fail-closed 原则：只有版本管理页明确看到"已生效/线上版本"才认为已发布——
+  // 从未发布过版本的应用（如复用测试应用续跑）基础信息页不会出现
+  // "版本发布后，当前修改方可生效"横幅，旧逻辑会误判"无待发布修改"而跳过发版，
+  // 导致应用永远停在未发布状态。publishApp 对已发布应用重发一版是安全的
+  // （见其入口注释），误判为"需要发版"的代价只是一次多余的重发。
   if (!ctx.result.appId) return { ok: false, detail: "无 App ID" };
   try {
-    const url = `https://open.feishu.cn/app/${ctx.result.appId}/baseinfo`;
-    await ctx.page.goto(url, { waitUntil: "domcontentloaded", timeout: ctx.config.timeoutMs });
+    const baseinfoUrl = `https://open.feishu.cn/app/${ctx.result.appId}/baseinfo`;
+    await ctx.page.goto(baseinfoUrl, { waitUntil: "domcontentloaded", timeout: ctx.config.timeoutMs });
     await ctx.page.waitForTimeout(4000);
-    const body = await ctx.page.locator("body").innerText().catch(() => "");
-    if (body.includes("版本发布后，当前修改方可生效")) {
+    const baseinfo = await ctx.page.locator("body").innerText().catch(() => "");
+    if (baseinfo.includes("版本发布后，当前修改方可生效")) {
       return { ok: false, detail: "存在未发布的修改（版本发布后方可生效）" };
+    }
+
+    // 可用范围与目标模式不符时必须发版纠正：个人用要求"部分成员"（仅应用
+    // 所有者），公用要求"全部成员"。已发布应用若沿用了另一模式的历史范围
+    // （如个人用重跑公用配置过的应用），跳过发版会让错误范围一直生效。
+    const scopeAll = baseinfo.includes("全部成员") || baseinfo.includes("所有员工");
+    const scopePartial = baseinfo.includes("部分成员");
+    if (PERSONAL_MODE && scopeAll) {
+      return { ok: false, detail: "个人用模式下可用范围当前为全部成员，需发版改回部分成员" };
+    }
+    if (!PERSONAL_MODE && scopePartial) {
+      return { ok: false, detail: "公用模式下可用范围当前为部分成员，需发版改为全部成员" };
+    }
+
+    const versionUrl = `https://open.feishu.cn/app/${ctx.result.appId}/version`;
+    await ctx.page.goto(versionUrl, { waitUntil: "domcontentloaded", timeout: ctx.config.timeoutMs });
+    await ctx.page.waitForTimeout(4000);
+    const versionBody = await ctx.page.locator("body").innerText().catch(() => "");
+    if (versionBody.includes("待申请")) {
+      return { ok: false, detail: "存在待申请版本（未发布）" };
+    }
+    const hasEffective = ["已生效", "线上版本", "最新版本"].some((m) => versionBody.includes(m));
+    if (!hasEffective) {
+      return { ok: false, detail: "版本管理页未检测到已生效版本（应用从未发布或状态不明）" };
     }
     return { ok: true, detail: "" };
   } catch (e) {
     // 页面打不开时不冒险跳过——交由发版流程自行处理
-    return { ok: false, detail: `基础信息页无法打开：${e}` };
+    return { ok: false, detail: `发布状态页无法打开：${e}` };
   }
 }
 
@@ -2662,7 +2676,110 @@ async function publishApp(ctx: StepContext): Promise<void> {
   await availabilityLabel.waitFor({ state: "visible", timeout: ctx.config.timeoutMs });
 
   if (PERSONAL_MODE) {
-    ctx.logger.info("个人用模式：保持默认可用范围（仅创建者），不修改为全部成员。");
+    // 个人用 = 「部分成员」+ 不添加任何成员（应用所有者隐含在可用范围内，
+    // 见编辑弹窗副标题"可用范围仅包括应用所有者和其他 5 名以内成员"）。
+    // 界面上不存在"仅创建者"选项，新应用的默认即 部分成员+空成员列表。
+    // 复用旧应用续跑时可能仍是公用模式设置的"全部成员"，必须主动改回。
+    const alreadyPartial = await waitForAnyText(ctx.page, ["部分成员"], 1200);
+    if (alreadyPartial) {
+      ctx.logger.info("个人用模式：可用范围已是部分成员（仅应用所有者），无需修改。");
+    } else {
+      const editAvailability = ctx.page.getByRole("button", { name: "编辑", exact: true }).last();
+      if (!(await editAvailability.isVisible().catch(() => false))) {
+        throw new Error("个人用模式：未找到应用可用范围的编辑按钮（当前非部分成员）。");
+      }
+      await editAvailability.click({ timeout: ctx.config.timeoutMs });
+      const availabilityDialog = (await findVisibleModal(ctx.page, ctx.config.timeoutMs)) ?? ctx.page;
+      const partialOption = await firstVisibleLocator(
+        [
+          availabilityDialog.getByRole("radio", { name: "部分成员", exact: true }),
+          availabilityDialog.getByText("部分成员", { exact: true })
+        ],
+        ctx.config.timeoutMs
+      );
+      if (!partialOption) throw new Error("可用范围弹窗中未找到“部分成员”选项。");
+      await partialOption.click({ timeout: ctx.config.timeoutMs });
+      await ctx.page.waitForTimeout(800);
+
+      // 部分成员要求显式勾选至少一名成员（空列表会被"请选择范围"校验拦住，
+      // 弹窗关不掉）。个人用 = 勾应用所有者本人：控制台页面全局对象
+      // window.user.name 即当前登录账号（应用所有者）；拿不到时把成员列表
+      // 打出来让客户按编号选择。
+      const ownerName = await ctx.page
+        .evaluate(() => (window as unknown as { user?: { name?: string } }).user?.name || "")
+        .catch(() => "");
+      await availabilityDialog.locator(".ud__select__selector__selectItem").first().click();
+      await ctx.page.waitForTimeout(1500);
+
+      let memberPicked = false;
+      if (ownerName) {
+        const ownerRow = ctx.page.getByText(ownerName, { exact: true }).last();
+        if (await ownerRow.isVisible().catch(() => false)) {
+          await ownerRow.click({ timeout: ctx.config.timeoutMs });
+          await ctx.page.waitForTimeout(600);
+          memberPicked = true;
+          ctx.logger.info(`个人用模式：已在成员列表勾选应用所有者「${ownerName}」。`);
+        }
+      }
+      if (!memberPicked) {
+        const candidates = await ctx.page.evaluate(() => {
+          const dlg = document.querySelector(".ud__dialog__wrap");
+          const keywords = new Set([
+            "搜索成员", "搜索", "组织架构", "更多", "全选", "暂未选择",
+            "确定", "取消", "可用范围设置", "全部成员", "部分成员"
+          ]);
+          const out: string[] = [];
+          const seen = new Set<string>();
+          if (dlg) {
+            const walker = document.createTreeWalker(dlg, NodeFilter.SHOW_TEXT);
+            let node = walker.nextNode() as Text | null;
+            while (node) {
+              const t = (node.textContent || "").trim();
+              if (t && t.length <= 30 && !keywords.has(t) && !seen.has(t) && !t.includes("部门")) {
+                seen.add(t);
+                out.push(t);
+              }
+              node = walker.nextNode() as Text | null;
+            }
+          }
+          return out;
+        });
+        if (!candidates.length) {
+          throw new Error("个人用模式：成员面板未列出可选成员，无法设置仅本人可用。");
+        }
+        if (isNonInteractivePrompt()) {
+          throw new Error(
+            `个人用模式：无法自动识别应用所有者，候选成员 ${candidates.map((c, i) => `${i + 1}.${c}`).join(" ")}；` +
+            "请以交互模式重跑并按提示选择。"
+          );
+        }
+        ctx.logger.info("无法自动识别应用所有者，请从下方成员列表选择（个人用 = 仅本人可用）：");
+        candidates.forEach((c, i) => ctx.logger.info(`  ${i + 1}. ${c}`));
+        const answer = (await promptText(ctx.prompt, `请输入要设为可用的成员序号 [1-${candidates.length}]: `)).trim();
+        const idx = Number(answer);
+        if (!Number.isInteger(idx) || idx < 1 || idx > candidates.length) {
+          throw new Error(`无效的成员序号：${answer}`);
+        }
+        const row = ctx.page.getByText(candidates[idx - 1], { exact: true }).last();
+        await row.click({ timeout: ctx.config.timeoutMs });
+        await ctx.page.waitForTimeout(600);
+        ctx.logger.info(`个人用模式：已勾选成员「${candidates[idx - 1]}」。`);
+      }
+
+      const confirmAvailability = await waitForEnabledAction(availabilityDialog, ["确定", "确认"], ctx.config.timeoutMs);
+      if (!confirmAvailability) throw new Error("个人用模式：选择部分成员后未找到可用范围确认按钮。");
+      await confirmAvailability.locator.click({ timeout: ctx.config.timeoutMs });
+      await ctx.page.waitForTimeout(1200);
+      const dialogStillOpen = await ctx.page.locator(".ud__dialog__wrap").last().isVisible().catch(() => false);
+      if (dialogStillOpen) {
+        throw new Error("个人用模式：可用范围弹窗未关闭（成员可能未选中或校验未通过）。");
+      }
+      const finalPartial = await waitForAnyText(ctx.page, ["部分成员"], 3000);
+      if (!finalPartial) {
+        throw new Error("个人用模式：应用可用范围未成功设置为部分成员，已停止发布。");
+      }
+      ctx.logger.info("个人用模式：应用可用范围已从历史设置改回部分成员（仅应用所有者）。");
+    }
   } else {
     const allMembersConfigured = await waitForAnyText(ctx.page, ["全部成员", "所有员工"], 1200);
     if (!allMembersConfigured) {

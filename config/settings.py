@@ -31,9 +31,10 @@ class Settings(BaseSettings):
     approval_rules_path: str = "./config/approval_rules.json"
 
     # Access control
-    # allowed_mode: creator=仅创建人 | org=企业全员 | groups=指定群成员 | list=指定人员
-    # 留空 = 旧行为（allowed_users 空=全员，非空=名单）
+    # 飞书访问白名单（留空 = 全员放行，非空 = 仅名单内 open_id 可用）
     allowed_users: str = ""
+    # 企业微信访问白名单（留空 = 全员放行，非空 = 仅名单内 userid 可用，无须 wecom: 前缀）
+    wecom_allowed_users: str = ""
     allowed_mode: str = ""
     allowed_creator: str = ""
     allowed_group_ids: str = ""
@@ -68,25 +69,47 @@ class Settings(BaseSettings):
         return out
 
     def get_allowed_users(self) -> list[str]:
-        return [u.strip() for u in self.allowed_users.split(",") if u.strip()]
+        """返回飞书有效白名单用户列表（兼容原有调用）。"""
+        return self.get_feishu_allowed_users()
+
+    def get_feishu_allowed_users(self) -> list[str]:
+        """获取飞书白名单用户 open_id 列表（自动过滤掉可能残留的 wecom: 项）。"""
+        return [
+            u.strip() for u in self.allowed_users.split(",")
+            if u.strip() and not u.strip().startswith("wecom:")
+        ]
+
+    def get_wecom_allowed_users(self) -> list[str]:
+        """获取企业微信白名单 userid 列表。
+
+        优先读取 WECOM_ALLOWED_USERS；若未配置该键，向下兼容从 ALLOWED_USERS 中解析 wecom: 前缀项。
+        """
+        raw = self.wecom_allowed_users.strip()
+        if raw:
+            res = []
+            for u in raw.split(","):
+                u = u.strip()
+                if u.startswith("wecom:"):
+                    u = u[len("wecom:"):].strip()
+                if u and u not in res:
+                    res.append(u)
+            return res
+
+        # 向下兼容旧配置：ALLOWED_USERS 中若有 wecom: 项
+        compat = []
+        for u in self.allowed_users.split(","):
+            u = u.strip()
+            if u.startswith("wecom:"):
+                uid = u[len("wecom:"):].strip()
+                if uid and uid not in compat:
+                    compat.append(uid)
+        return compat
 
     def get_allowed_users_for(self, platform: str) -> list[str]:
-        """按平台过滤白名单：无前缀=飞书（兼容旧配置），wecom:xxx=企业微信。
-
-        注意：若原始名单非空但某平台的过滤结果为空，表示该平台无人被授权
-        （调用方需区分"原始名单为空=全员放行"与"过滤后为空=全拒"）。
-        """
-        out: list[str] = []
-        for u in self.get_allowed_users():
-            if u.startswith("wecom:"):
-                if platform == "wecom":
-                    out.append(u[len("wecom:"):])
-            elif platform == "wecom":
-                if not u.startswith("ou_"):
-                    out.append(u)
-            elif platform != "wecom":
-                out.append(u)
-        return out
+        """按平台获取对应的独立白名单列表。"""
+        if platform == "wecom":
+            return self.get_wecom_allowed_users()
+        return self.get_feishu_allowed_users()
 
     def get_allowed_mode(self) -> str:
         mode = self.allowed_mode.strip().lower()

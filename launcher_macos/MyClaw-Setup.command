@@ -1,5 +1,5 @@
 #!/bin/bash
-# MyClaw macOS 安装与配置向导（等价 Windows 的 MyClaw-Setup.bat）。
+# MyClaw macOS 安装与配置向导（等价 Windows 的 MyClaw-Setup.bat，双击即可运行）。
 # 首次运行：安装 uv/Python 依赖、生成 .env、检查 Node/Claude CLI；
 # 随后进入配置菜单（飞书/企微/白名单/模型），可随时重跑只做配置。
 set -u
@@ -158,7 +158,7 @@ while true; do
             echo "=============================================="
             echo "[SUCCESS] MyClaw 安装与配置完成！"
             echo "  启动服务      : 双击本目录 MyClaw.command（或运行 bash scripts/restart_mac.sh）"
-            echo "  重新配置      : 重跑本脚本 ./setup.sh"
+            echo "  重新配置      : 双击本目录 MyClaw-Setup.command 重跑"
             echo "  开机自启      : bash scripts/setup_autostart_mac.sh"
             echo "  健康检查      : curl http://127.0.0.1:8080/health"
             echo "=============================================="

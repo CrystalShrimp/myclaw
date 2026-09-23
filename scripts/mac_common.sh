@@ -64,11 +64,11 @@ mac_start_service() {
     local py
     py="$(mac_python)"
     if [ ! -x "$py" ]; then
-        echo "[ERROR] 未找到 $py — 请先运行 setup-mac.sh（uv sync 创建虚拟环境）。" >&2
+        echo "[ERROR] 未找到 $py — 请先运行 MyClaw-Setup.command（uv sync 创建虚拟环境）。" >&2
         return 3
     fi
     if [ ! -f "$MAC_ENV_FILE" ]; then
-        echo "[ERROR] 缺少 $MAC_ENV_FILE — 请先运行 setup-mac.sh。" >&2
+        echo "[ERROR] 缺少 $MAC_ENV_FILE — 请先运行 MyClaw-Setup.command。" >&2
         return 2
     fi
     (cd "$MAC_ROOT" && nohup "$py" -m app.main >>"$MAC_SERVICE_LOG" 2>&1 &)

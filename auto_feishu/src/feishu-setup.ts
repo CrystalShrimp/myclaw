@@ -2380,6 +2380,18 @@ async function verifyPermissionsLive(ctx: StepContext): Promise<{ ok: boolean; d
       return { ok: false, detail: "缺少关键发消息权限（im:message:send_as_bot / 以应用的身份发消息）" };
     }
 
+    // 核心活体校验：机器人必须拥有接收消息的核心权限（im:message.p2p_msg:readonly 或 im:message）
+    const hasReceivePermission =
+      body.includes("im:message.p2p_msg:readonly") ||
+      body.includes("获取用户发给机器人的单聊消息") ||
+      body.includes("读取用户发给机器人的单聊消息") ||
+      body.includes("im:message") ||
+      body.includes("获取与发送单聊、群消息");
+
+    if (!hasReceivePermission) {
+      return { ok: false, detail: "缺少关键接收消息权限（im:message.p2p_msg:readonly / 获取用户发给机器人的单聊消息）" };
+    }
+
     return { ok: true, detail: "" };
   } catch (e) {
     return { ok: false, detail: `权限页无法打开：${e}` };

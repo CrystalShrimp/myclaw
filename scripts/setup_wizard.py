@@ -102,6 +102,46 @@ def check_prerequisites():
             run_cmd([sys.executable, str(ROOT_DIR / "scripts" / "manage_models.py")])
 
 
+def ensure_playwright_chromium(auto_feishu_dir: Path) -> bool:
+    """快速检测 Playwright Chromium 驱动，已就绪则秒级跳过，未就绪则镜像加速安装。"""
+    # 1. 尝试检测 Chromium 可执行文件是否已存在
+    check_script = "const { chromium } = require('playwright'); const p = chromium.executablePath(); process.exit(require('fs').existsSync(p) ? 0 : 1);"
+    try:
+        res = subprocess.run(["node", "-e", check_script], cwd=auto_feishu_dir, capture_output=True, text=True)
+        if res.returncode == 0:
+            print("[OK] Playwright Chromium 浏览器驱动已就绪。")
+            return True
+    except Exception:
+        pass
+
+    # 2. 若未就绪，清理潜在的残留死锁目录 __dirlock
+    try:
+        cache_dirs = []
+        if sys.platform == "darwin":
+            cache_dirs.append(Path.home() / "Library" / "Caches" / "ms-playwright")
+        elif sys.platform == "win32":
+            local_appdata = os.environ.get("LOCALAPPDATA")
+            if local_appdata:
+                cache_dirs.append(Path(local_appdata) / "ms-playwright")
+        else:
+            cache_dirs.append(Path.home() / ".cache" / "ms-playwright")
+
+        for cd in cache_dirs:
+            dirlock = cd / "__dirlock"
+            if dirlock.exists():
+                shutil.rmtree(dirlock, ignore_errors=True)
+    except Exception:
+        pass
+
+    # 3. 注入国内镜像加速执行安装
+    print("[*] 正在安装 Playwright Chromium 组件（已启用国内镜像加速）...")
+    install_env = {
+        "PLAYWRIGHT_DOWNLOAD_HOST": os.environ.get("PLAYWRIGHT_DOWNLOAD_HOST", "https://npmmirror.com/mirrors/playwright")
+    }
+    code = run_cmd(["npx", "playwright", "install", "chromium"], cwd=auto_feishu_dir, env=install_env)
+    return code == 0
+
+
 def setup_feishu(mode: str):
     """直接使用 npm 直驱执行 auto_feishu 自动化，无中间层，杜绝二次询问与参数丢失。"""
     auto_feishu_dir = ROOT_DIR / "auto_feishu"
@@ -114,13 +154,13 @@ def setup_feishu(mode: str):
 
     # 1. 确保 auto_feishu npm 依赖
     node_modules = auto_feishu_dir / "node_modules"
-    if not node_modules.exists():
-        print("[*] 首次配置，正在安装依赖 (npm ci)...")
-        run_cmd(["npm", "ci", "--ignore-scripts"], cwd=auto_feishu_dir)
+    playwright_pkg = node_modules / "playwright"
+    if not node_modules.exists() or not playwright_pkg.exists():
+        print("[*] 依赖缺失或未完全安装，正在安装依赖 (npm install)...")
+        run_cmd(["npm", "install", "--no-audit", "--no-fund"], cwd=auto_feishu_dir)
 
-    # 2. 确保 Playwright Chromium 浏览器组件
-    print("[*] 校验 Playwright Chromium 组件...")
-    run_cmd(["npx", "playwright", "install", "chromium"], cwd=auto_feishu_dir)
+    # 2. 确保 Playwright Chromium 浏览器组件（已就绪秒级跳过，未就绪镜像加速）
+    ensure_playwright_chromium(auto_feishu_dir)
 
     # 3. 按选定模式直驱飞书配置脚本
     print(f"[*] 正在执行飞书自动化配置（{mode_label}）...")

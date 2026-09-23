@@ -4,6 +4,9 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# 权限自愈：确保项目内脚本具备可执行权限
+chmod +x "$ROOT"/launcher_macos/*.command "$ROOT"/scripts/*.sh "$ROOT"/auto_feishu/*.sh 2>/dev/null || true
+
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 echo "=================================================="

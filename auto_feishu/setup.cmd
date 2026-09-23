@@ -78,16 +78,24 @@ if errorlevel 1 (
 :CHROMIUM_INSTALL
 REM === 3. Playwright Chromium ===
 echo [INFO] Ensuring Playwright Chromium is installed...
-call npx playwright install chromium
-if errorlevel 1 (
-    echo [ERROR] Chromium install failed. Without it Feishu automation cannot run.
-    echo   Common causes:
-    echo     1. Network / firewall blocked the download
-    echo     2. Company proxy required ^(set HTTP_PROXY^)
-    echo     3. Disk space issue
-    echo   Retry manually: cd auto_feishu ^& npx playwright install chromium
-    pause
-    exit /b 1
+node -e "const { chromium } = require('playwright'); const p = chromium.executablePath(); process.exit(require('fs').existsSync(p) ? 0 : 1);" >nul 2>nul
+if %errorlevel% equ 0 (
+    echo [OK] Playwright Chromium browser driver is ready.
+) else (
+    echo [INFO] Downloading Playwright Chromium via mirror accelerator...
+    if exist "%LOCALAPPDATA%\ms-playwright\__dirlock" rd /s /q "%LOCALAPPDATA%\ms-playwright\__dirlock" 2>nul
+    set "PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright"
+    call npx playwright install chromium
+    if errorlevel 1 (
+        echo [ERROR] Chromium install failed. Without it Feishu automation cannot run.
+        echo   Common causes:
+        echo     1. Network / firewall blocked the download
+        echo     2. Company proxy required ^(set HTTP_PROXY^)
+        echo     3. Disk space issue
+        echo   Retry manually: cd auto_feishu ^& npx playwright install chromium
+        pause
+        exit /b 1
+    )
 )
 
 echo.

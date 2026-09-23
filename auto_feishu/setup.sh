@@ -33,10 +33,16 @@ echo "[OK] npm 依赖检查通过！"
 
 # 3. Playwright Chromium 安装
 echo "[INFO] 正在检查 Playwright Chromium 浏览器驱动..."
-npx playwright install chromium || {
-    echo "[ERROR] Chromium 安装失败。请手动执行: npx playwright install chromium"
-    exit 1
-}
+if node -e "const { chromium } = require('playwright'); const p = chromium.executablePath(); process.exit(require('fs').existsSync(p) ? 0 : 1);" 2>/dev/null; then
+    echo "[OK] Playwright Chromium 浏览器驱动已就绪！"
+else
+    echo "[INFO] 正在安装 Chromium 浏览器驱动（已启用国内镜像加速）..."
+    rm -rf "$HOME/Library/Caches/ms-playwright/__dirlock" "$HOME/.cache/ms-playwright/__dirlock" 2>/dev/null || true
+    PLAYWRIGHT_DOWNLOAD_HOST="https://npmmirror.com/mirrors/playwright" npx playwright install chromium || {
+        echo "[ERROR] Chromium 安装失败。请手动执行: PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright npx playwright install chromium"
+        exit 1
+    }
+fi
 
 # 4. 运行飞书自动化配置
 DEPLOY_MODE="${1:-}"

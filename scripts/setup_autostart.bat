@@ -8,7 +8,7 @@ echo.
 
 set "STARTUP_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
 set "NEW_LNK=%STARTUP_DIR%\MyClaw.lnk"
-set "MYCLAW_BAT=%~dp0..\MyClaw.bat"
+set "MYCLAW_BAT=%~dp0..\windows_launch\MyClaw.bat"
 
 if not exist "%MYCLAW_BAT%" (
     echo [ERROR] MyClaw.bat not found in parent directory!

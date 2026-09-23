@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 echo ===================================================
 echo           MyClaw 环境依赖自检与自动安装工具
@@ -116,11 +116,11 @@ if exist ".env" (
     goto CHECK_CLAUDE
 )
 
-if not exist "examples\.env.example" goto CHECK_CLAUDE
+if not exist "config\env.example" goto CHECK_CLAUDE
 echo [!] 警告: 未检测到环境文件 .env。
-set /p CHOICE_ENV="[?] 是否自动从 examples\.env.example 创建初始 .env 环境文件？ [Y/N]: "
+set /p CHOICE_ENV="[?] 是否自动从 config\env.example 创建初始 .env 环境文件？ [Y/N]: "
 if /i not "%CHOICE_ENV%"=="Y" if /i not "%CHOICE_ENV%"=="" goto CHECK_CLAUDE
-copy "examples\.env.example" ".env" >nul
+copy "config\env.example" ".env" >nul
 echo [OK] 初始 .env 环境文件已创建（飞书凭据稍后由 setup.cmd 自动写入）。
 
 REM ================= 5. Claude Code CLI 检查 =================
@@ -200,8 +200,8 @@ if "%NEED_RESTART_CMD%"=="1" (
 )
 echo.
 echo 后续步骤:
-echo   1. 双击 auto_feishu\setup.cmd 一键配置飞书机器人 (自动写入 .env 凭据)
-echo   2. 双击 MyClaw.bat 启动服务
+echo   1. 双击本目录 setup.cmd 选择平台配置（飞书自动配置 / 企微向导 / 模型管理）
+echo   2. 双击本目录 MyClaw.bat 启动服务
 echo   3. 在 .env 的 ALLOWED_USERS 中加入使用者飞书 Open ID (留空=允许所有人)
 
 if not exist "scripts\setup_autostart.bat" goto END_ALL

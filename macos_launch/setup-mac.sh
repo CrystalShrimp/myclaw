@@ -1,7 +1,7 @@
 #!/bin/bash
 # MyClaw macOS 一键安装/自检向导（等价 Windows 的 MyClaw-Setup.bat）。
 set -u
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
@@ -26,9 +26,9 @@ echo "[OK] Python 虚拟环境依赖安装完成！"
 
 # 3. .env 检查
 if [ ! -f ".env" ]; then
-    if [ -f "examples/.env.example" ]; then
-        cp "examples/.env.example" ".env"
-        echo "[OK] 已从 examples/.env.example 生成 .env 模板。"
+    if [ -f "config/env.example" ]; then
+        cp "config/env.example" ".env"
+        echo "[OK] 已从 config/env.example 生成 .env 模板。"
     else
         cat > ".env" <<EOF
 # ===== Feishu App Config =====
@@ -78,7 +78,7 @@ fi
 echo ""
 echo "======================================"
 echo "[SUCCESS] MyClaw 安装与初始化完成！"
-echo "  启动服务      : 双击 MyClaw.command（或运行 bash scripts/restart_mac.sh）"
+echo "  启动服务      : 双击本目录 MyClaw.command（或运行 bash scripts/restart_mac.sh）"
 echo "  配置飞书/企微 : 在终端执行 ./setup.sh"
 echo "  管理/切换模型 : 在终端执行 ./setup.sh 选 6"
 echo "  开机自启      : bash scripts/setup_autostart_mac.sh"

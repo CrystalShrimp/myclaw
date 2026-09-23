@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = Path(os.environ.get("MYCLAW_CONFIG_DIR") or (ROOT / "config"))
-EXAMPLES_DIR = ROOT / "examples"
+EXAMPLES_DIR = CONFIG_DIR  # 模板与真实配置同在 config/
 
 PRESETS = {
     "1": {

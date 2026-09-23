@@ -3,6 +3,8 @@
 # 约定：脚本位于 <root>/scripts/，项目根为其上一级目录。
 set -u
 
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+
 MAC_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MAC_LOG_DIR="$MAC_ROOT/logs"
 MAC_ENV_FILE="$MAC_ROOT/.env"

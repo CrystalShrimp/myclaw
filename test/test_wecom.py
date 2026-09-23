@@ -247,12 +247,28 @@ def test_parse_mode_key(monkeypatch):
 def test_progress_render_final():
     from app.wecom.cards import render_progress_text
 
+    # 纯对话：完成后直接返回结果文本
     snap = ProgressSnap(
         model="sonnet", status="completed", result_text="全部完成",
         input_tokens=1000, output_tokens=2000, task_id="t1",
     )
-    text = render_progress_text(snap)
-    assert "任务完成" in text and "全部完成" in text and "1,000" in text
+    assert render_progress_text(snap).strip() == "全部完成"
+
+    # 有工具调用：结果 + 耗时/工具摘要脚注
+    snap2 = ProgressSnap(
+        model="sonnet", status="completed", result_text="done",
+        tool_counts={"Bash": 2, "Read": 1}, elapsed_s=12.3,
+    )
+    text2 = render_progress_text(snap2)
+    assert text2.startswith("done") and "Bash×2" in text2 and "12" in text2
+
+    # 失败态：标题 + 错误信息
+    snap3 = ProgressSnap(status="failed", error="boom")
+    assert "失败" in render_progress_text(snap3) and "boom" in render_progress_text(snap3)
+
+    # 空结果兜底文案
+    snap4 = ProgressSnap(status="completed")
+    assert "执行完成" in render_progress_text(snap4)
 
 
 def test_allowed_users_platform_filter(monkeypatch):

@@ -716,6 +716,13 @@ function writeSystemClipboardText(text: string): boolean {
         stdio: ["pipe", "ignore", "ignore"]
       });
       return true;
+    } else if (process.platform === "darwin") {
+      execFileSync("pbcopy", [], {
+        input: text,
+        encoding: "utf8",
+        stdio: ["pipe", "ignore", "ignore"]
+      });
+      return true;
     }
   } catch {
     return false;
@@ -1868,26 +1875,43 @@ async function readFeishuCredentials(envPath: string): Promise<{ appId: string; 
   }
 }
 async function stopLocalClawService(ctx: StepContext): Promise<void> {
-  if (process.platform !== "win32") return;
+  let port = "8080";
   try {
-    const out = execFileSync("cmd", ["/c", "netstat -ano | findstr :8080"], { encoding: "utf8" }).toString();
-    const pids = new Set<string>();
-    for (const line of out.split("\n")) {
-      const parts = line.trim().split(/\s+/);
-      if (parts.length >= 5 && parts[3] === "LISTENING" && /^\d+$/.test(parts[4])) {
-        pids.add(parts[4]);
-      }
+    if (ctx.config.localServiceUrl) {
+      port = new URL(ctx.config.localServiceUrl).port || "8080";
     }
-    for (const pid of pids) {
-      try {
-        execFileSync("taskkill", ["/F", "/T", "/PID", pid], { stdio: "ignore" });
-        ctx.logger.info("已停止占用 8080 端口的本地服务进程：" + pid);
-      } catch {
-        // 进程可能已退出
+  } catch {}
+
+  if (process.platform === "win32") {
+    try {
+      const out = execFileSync("cmd", ["/c", `netstat -ano | findstr :${port}`], { encoding: "utf8" }).toString();
+      const pids = new Set<string>();
+      for (const line of out.split("\n")) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length >= 5 && parts[3] === "LISTENING" && /^\d+$/.test(parts[4])) {
+          pids.add(parts[4]);
+        }
       }
-    }
-  } catch {
-    // netstat 无输出 = 服务本就没在跑
+      for (const pid of pids) {
+        try {
+          execFileSync("taskkill", ["/F", "/T", "/PID", pid], { stdio: "ignore" });
+          ctx.logger.info(`已停止占用 ${port} 端口的本地服务进程：` + pid);
+        } catch {}
+      }
+    } catch {}
+  } else if (process.platform === "darwin" || process.platform === "linux") {
+    try {
+      const out = execFileSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" }).toString();
+      for (const line of out.split("\n")) {
+        const pid = line.trim();
+        if (pid && /^\d+$/.test(pid)) {
+          try {
+            execFileSync("kill", ["-9", pid], { stdio: "ignore" });
+            ctx.logger.info(`已停止占用 ${port} 端口的本地服务进程：` + pid);
+          } catch {}
+        }
+      }
+    } catch {}
   }
 }
 

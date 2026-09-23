@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 
 from pydantic_settings import BaseSettings
 
@@ -100,8 +101,20 @@ class Settings(BaseSettings):
     def get_default_workspace(self) -> str:
         """Return the configured workspace, or the process cwd when unset."""
         configured = self.default_workspace.strip()
-        path = Path(configured).expanduser() if configured else Path.cwd()
-        return str(path.resolve())
+        if configured:
+            path = Path(configured).expanduser()
+            if path.exists():
+                return str(path.resolve())
+        # 未配置或指定路径不存在时，优雅回退到系统可用目录
+        if sys.platform != "win32":
+            candidate = Path.home() / "projects"
+            if candidate.is_dir():
+                return str(candidate.resolve())
+        else:
+            candidate = Path("D:\\projects")
+            if candidate.is_dir():
+                return str(candidate.resolve())
+        return str(Path.cwd().resolve())
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

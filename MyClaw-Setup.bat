@@ -155,7 +155,7 @@ goto CHECK_PROVIDER
 :CLAUDE_SKIP
 echo [-] 已跳过 Claude Code CLI 安装。
 
-REM ================= 6. 模型供应商 API Key 配置 =================
+REM ================= 6. 模型与供应商配置（原 models.cmd 功能已整合进来） =================
 :CHECK_PROVIDER
 echo.
 set "ACTIVE_PROFILE="
@@ -164,20 +164,29 @@ if exist "config\active_profile" (
 )
 if exist "config\settings_%ACTIVE_PROFILE%.json" (
     echo [OK] 模型供应商已配置: %ACTIVE_PROFILE%
-    goto FINISH
+    goto MODELS_ASK
 )
 
-echo [!] 尚未配置模型供应商 (没有 API Key 机器人无法对话)。
+echo [!] 您未配置模型供应商 (没有 API Key 无法对话)。
 if not exist ".venv\Scripts\python.exe" (
-    echo [ERROR] .venv 不存在，无法写入配置。请先完成第 2 步 Python 环境安装。
+    echo [ERROR] .venv 不存在，无法完成该配置。请先完成第 2 步 Python 环境安装。
     pause
     exit /b 1
 )
-REM 供应商向导：预置三家 + 自定义（名称/地址/Key/三档模型，回车=三档同名），
-REM 可连续配置多个，结束时选择当前生效供应商。输入交互全部由 python 端处理。
-".venv\Scripts\python.exe" "scripts\setup_provider.py"
+goto RUN_MODELS
+
+:MODELS_ASK
+REM 已有配置时询问是否打开管理（查看/切换/新增/编辑/测试/删除）
+set "CHOICE_MODELS="
+set /p CHOICE_MODELS="[?] 是否打开模型与供应商管理向导？ [Y/N]: "
+if /i "%CHOICE_MODELS%"=="Y" goto RUN_MODELS
+goto FINISH
+
+:RUN_MODELS
+REM 模型与供应商管理向导（scripts/manage_models.py，交互全部由 python 处理）
+".venv\Scripts\python.exe" "scripts\manage_models.py"
 if errorlevel 1 (
-    echo [ERROR] 供应商配置失败。
+    echo [ERROR] 模型与供应商管理向导异常退出。
     pause
     exit /b 1
 )

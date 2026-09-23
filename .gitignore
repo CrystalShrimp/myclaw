@@ -78,3 +78,5 @@ audit.log
 auto_feishu/*.txt
 auto_feishu/key.txt
 
+# 归档目录（历史任务产物，不入库）
+archive/

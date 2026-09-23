@@ -786,6 +786,7 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workspace,
+                start_new_session=(sys.platform != "win32"),
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
             out = _decode_output(stdout).strip()

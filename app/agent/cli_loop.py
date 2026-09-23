@@ -548,6 +548,7 @@ class ClaudeCLILoop:
             cwd=workspace,
             env=env,
             limit=10 * 1024 * 1024,
+            start_new_session=(sys.platform != "win32"),
         )
         self._processes[open_id] = proc
         self._stdin_writers[open_id] = proc.stdin  # type: ignore[assignment]

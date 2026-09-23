@@ -1,113 +1,52 @@
 @echo off
-chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
 
 echo ==============================================
-echo            MyClaw 平台配置向导
+echo            MyClaw ƽ̨����
 echo ==============================================
 echo.
-echo  1. 配置飞书 - 个人用（仅创建者可用，不改变应用可用范围）
-echo  2. 配置飞书 - 公用（可用范围全员，支持群成员一键导入白名单）
-echo  3. 飞书群成员一键导入白名单（日常维护工具）
-echo  4. 配置企业微信（手动填 + 连通实测）
-echo  5. 完整配置（飞书公用 + 企业微信）
-echo  6. 模型与供应商管理（切换/添加/修改/测试模型）
-echo  0. 退出
+echo  1. ���÷��飨Playwright �Զ����ã�
+echo  2. ������ҵ΢�ţ��ֶ��� + ��ͨʵ�⣩
+echo  3. ���߶��䣨�ȷ������΢��
+echo  4. ģ���빩Ӧ�̹������鿴/�л�/����/�༭/����/ɾ����
+echo  0. �˳�
 echo.
-set /p choice=请选择 [0/1/2/3/4/5/6]: 
+set /p choice=��ѡ�� [0/1/2/3/4]: 
 
-if "%choice%"=="1" goto feishu_personal
-if "%choice%"=="2" goto feishu_public
-if "%choice%"=="3" goto feishu_import
-if "%choice%"=="4" goto wecom
-if "%choice%"=="5" goto both
-if "%choice%"=="6" goto manage_models
+if "%choice%"=="1" goto feishu
+if "%choice%"=="2" goto wecom
+if "%choice%"=="3" goto both
+if "%choice%"=="4" goto models
 goto end
 
-:feishu_personal
-call auto_feishu\setup.cmd personal
-if errorlevel 1 goto end
-echo.
-echo [OK] 飞书个人用模式配置完成（可用范围保持仅限创建者）。
-goto end
-
-:feishu_public
-call auto_feishu\setup.cmd public
-if errorlevel 1 goto end
-
-echo.
-echo ==============================================
-echo           飞书公用模式 - 白名单配置
-echo ==============================================
-echo 💡 默认模式：ALLOWED_USERS 保持为空，企业内全员均可直接访问。
-echo.
-set /p IMPORT_CHOICE="[?] 是否需要将特定群聊的所有用户ID一键导入为白名单？[Y/N] (默认 N): "
-if /i "%IMPORT_CHOICE%"=="Y" (
-    if exist ".venv\Scripts\python.exe" (
-        ".venv\Scripts\python.exe" scripts\import_feishu_group.py
-    ) else (
-        python scripts\import_feishu_group.py
-    )
-) else (
-    if exist ".venv\Scripts\python.exe" (
-        ".venv\Scripts\python.exe" -c "from scripts.import_feishu_group import read_env, upsert_env; env=read_env(); wecom=[u for u in env.get('ALLOWED_USERS','').split(',') if u.strip().startswith('wecom:')]; upsert_env('ALLOWED_USERS', ','.join(wecom))"
-    )
-    echo [OK] 已将 ALLOWED_USERS 设为全员开放模式。
-)
-goto end
-
-:feishu_import
-if not exist ".venv\Scripts\python.exe" (
-    echo [X] 未找到 .venv，请先运行 MyClaw-Setup.bat 完成环境安装
-    goto end
-)
-".venv\Scripts\python.exe" scripts\import_feishu_group.py
+:feishu
+call auto_feishu\setup.cmd
 goto end
 
 :wecom
 if not exist ".venv\Scripts\python.exe" (
-    echo [X] 未找到 .venv，请先运行 MyClaw-Setup.bat 完成环境安装
+    echo [X] δ�ҵ� .venv���������� MyClaw-Setup.bat ��ɻ�����װ
     goto end
 )
 ".venv\Scripts\python.exe" scripts\setup_wecom.py
 goto end
 
 :both
-call auto_feishu\setup.cmd public
-if errorlevel 1 goto end
-
-echo.
-echo ==============================================
-echo           飞书公用模式 - 白名单配置
-echo ==============================================
-echo 💡 默认模式：ALLOWED_USERS 保持为空，企业内全员均可直接访问。
-echo.
-set /p IMPORT_CHOICE="[?] 是否需要将特定群聊的所有用户ID一键导入为白名单？[Y/N] (默认 N): "
-if /i "%IMPORT_CHOICE%"=="Y" (
-    if exist ".venv\Scripts\python.exe" (
-        ".venv\Scripts\python.exe" scripts\import_feishu_group.py
-    ) else (
-        python scripts\import_feishu_group.py
-    )
-) else (
-    if exist ".venv\Scripts\python.exe" (
-        ".venv\Scripts\python.exe" -c "from scripts.import_feishu_group import read_env, upsert_env; env=read_env(); wecom=[u for u in env.get('ALLOWED_USERS','').split(',') if u.strip().startswith('wecom:')]; upsert_env('ALLOWED_USERS', ','.join(wecom))"
-    )
-    echo [OK] 已将 ALLOWED_USERS 设为全员开放模式。
-)
-
-echo.
-echo 接下来进行企业微信配置...
+call auto_feishu\setup.cmd
 if not exist ".venv\Scripts\python.exe" (
-    echo [X] 未找到 .venv，请先运行 MyClaw-Setup.bat 完成环境安装
+    echo [X] δ�ҵ� .venv���������� MyClaw-Setup.bat ��ɻ�����װ
     goto end
 )
 ".venv\Scripts\python.exe" scripts\setup_wecom.py
 goto end
 
-:manage_models
-call models.cmd
+:models
+if not exist ".venv\Scripts\python.exe" (
+    echo [X] δ�ҵ� .venv���������� MyClaw-Setup.bat ��ɻ�����װ
+    goto end
+)
+".venv\Scripts\python.exe" scripts\manage_models.py
 goto end
 
 :end

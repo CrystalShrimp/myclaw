@@ -254,7 +254,8 @@ def start_server() -> None:
         tail = ""
         if LOG_PATH.exists():
             tail = "\n".join(LOG_PATH.read_text("utf-8", errors="replace").splitlines()[-20:])
-        (ROOT / "myclaw-tray-error.log").write_text(
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        (LOG_PATH.parent / "tray-error.log").write_text(
             f"myclaw backend did not become healthy within 30s. Recent log tail:\n{tail}",
             encoding="utf-8",
         )
@@ -343,5 +344,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        (ROOT / "myclaw-tray-error.log").write_text(traceback.format_exc(), encoding="utf-8")
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        (LOG_PATH.parent / "tray-error.log").write_text(traceback.format_exc(), encoding="utf-8")
         message(str(exc), "myclaw 启动失败")

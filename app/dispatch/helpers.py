@@ -85,11 +85,25 @@ def _decode_output(raw: bytes) -> str:
 
 
 def restore_project_path(encoded_name: str) -> str | None:
-    """根据 projects 里的编码文件夹名，还原真实的磁盘绝对路径。"""
-    if len(encoded_name) < 4 or encoded_name[1:3] != "--":
+    """根据 projects 里的编码文件夹名，还原真实的磁盘绝对路径（跨平台支持 Windows 与 macOS/Linux）。"""
+    if not encoded_name or len(encoded_name) < 2:
         return None
-    drive = encoded_name[0] + ":\\"
-    remaining = encoded_name[3:]
+
+    # 判断平台格式：
+    # 1. Windows 盘符格式：例如 "D--ForRunning-ForDev-test"
+    # 2. POSIX / macOS 格式：例如 "-Users-alice-projects-demo"
+    if len(encoded_name) >= 4 and encoded_name[0].isalpha() and encoded_name[1:3] == "--":
+        drive = encoded_name[0] + ":\\"
+        root_path = Path(drive)
+        remaining = encoded_name[3:]
+    elif encoded_name.startswith("-"):
+        root_path = Path("/")
+        remaining = encoded_name.lstrip("-")
+    else:
+        return None
+
+    if not root_path.exists():
+        return None
 
     def clean(s: str) -> str:
         return re.sub(r'[^a-zA-Z0-9]', '', s).lower()
@@ -106,7 +120,7 @@ def restore_project_path(encoded_name: str) -> str | None:
             # 过滤掉一些绝对不需要遍历的巨大子目录以保证效率
             subdirs = [
                 x for x in current_dir.iterdir()
-                if x.is_dir() and x.name not in (".venv", "node_modules", ".git")
+                if x.is_dir() and x.name not in (".venv", "node_modules", ".git", "System", "Library")
             ]
         except Exception:
             return
@@ -148,7 +162,7 @@ def restore_project_path(encoded_name: str) -> str | None:
 
         return rem_str[rem_idx:]
 
-    dfs(Path(drive), remaining)
+    dfs(root_path, remaining)
     return matched[0] if matched else None
 
 

@@ -100,7 +100,7 @@ def main():
     if success:
         print("SUCCESS: MyClaw backend is up. Tray icon may take a few more seconds; check system tray.")
     else:
-        print("WARNING: /health did not return 200 within 30s. Check logs/myclaw.log and myclaw-tray-error.log.")
+        print("WARNING: /health did not return 200 within 30s. Check logs/myclaw.log and logs/tray-error.log.")
 
 if __name__ == "__main__":
     main()

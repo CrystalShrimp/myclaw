@@ -2364,8 +2364,23 @@ async function verifyPermissionsLive(ctx: StepContext): Promise<{ ok: boolean; d
     await ctx.page.goto(url, { waitUntil: "domcontentloaded", timeout: ctx.config.timeoutMs });
     await ctx.page.waitForTimeout(4000);
     const body = await ctx.page.locator("body").innerText().catch(() => "");
-    const empty = body.includes("暂未开通任何权限");
-    return { ok: !empty, detail: empty ? "权限列表为空（暂未开通任何权限）" : "" };
+    if (body.includes("暂未开通任何权限")) {
+      return { ok: false, detail: "权限列表为空（暂未开通任何权限）" };
+    }
+
+    // 核心活体校验：机器人必须拥有发消息的核心权限（im:message:send_as_bot 或 im:message）
+    const hasSendPermission =
+      body.includes("im:message:send_as_bot") ||
+      body.includes("以应用的身份发消息") ||
+      body.includes("im:message:send") ||
+      body.includes("im:message") ||
+      body.includes("获取与发送单聊、群消息");
+
+    if (!hasSendPermission) {
+      return { ok: false, detail: "缺少关键发消息权限（im:message:send_as_bot / 以应用的身份发消息）" };
+    }
+
+    return { ok: true, detail: "" };
   } catch (e) {
     return { ok: false, detail: `权限页无法打开：${e}` };
   }
@@ -3134,14 +3149,16 @@ async function mainV2(): Promise<void> {
 
     // 跳过决策基于线上活体校验，不信任 result.json 的历史标志：
     // 后台手动改动（权限关闭/事件退订）不会使缓存标志失效。
+    let permissionsImportedThisRun = false;
     const permLive = await verifyPermissionsLive(ctx);
     if (!permLive.ok) {
       logger.info(`线上校验：飞书权限异常（${permLive.detail || "未通过"}），执行导入...`);
       await executeStep(ctx, "导入飞书权限", async () => {
         await importPermissionsV2(ctx);
+        permissionsImportedThisRun = true;
       });
     } else {
-      logger.info("线上校验：飞书权限已开通，跳过导入。");
+      logger.info("线上校验：飞书发消息核心权限已开通，跳过导入。");
     }
 
     if (!ctx.result.botEnabled) {
@@ -3166,8 +3183,12 @@ async function mainV2(): Promise<void> {
 
     if (config.publishAfterSetup) {
       const pubLive = await verifyPublishLive(ctx);
-      if (!pubLive.ok) {
-        logger.info(`线上校验：${pubLive.detail}，执行发版...`);
+      // 若线上检测需要发版，或本次会话刚导入了新权限，必须发版（飞书要求新增权限必须发布版本方对 OpenAPI 生效）
+      if (!pubLive.ok || permissionsImportedThisRun) {
+        const reason = permissionsImportedThisRun
+          ? "已导入新权限，必须发版以使权限对 OpenAPI 正式生效"
+          : pubLive.detail;
+        logger.info(`线上校验：${reason}，执行发版...`);
         await executeStep(ctx, "创建并发布飞书应用版本", async () => {
           await publishApp(ctx);
         });

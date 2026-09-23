@@ -4,7 +4,7 @@
 
 ## 核心能力
 
-- **飞书 / 企业微信双平台同时在线**：同一进程两条长连接；`windows_launch/setup.cmd` / `macos_launch/setup.sh` 选择平台，`MYCLAW_CHANNELS` 留空时按凭据自动探测，会话按平台隔离互不干扰；
+- **飞书 / 企业微信双平台同时在线**：同一进程两条长连接；`windows_launch/MyClaw-Setup.bat` / `macos_launch/setup.sh` 一站式安装并选择平台，`MYCLAW_CHANNELS` 留空时按凭据自动探测，会话按平台隔离互不干扰；
 - **IM 发起任务，进度实时回流**：飞书同一张卡片增量刷新工具调用、阶段性输出和 token 用量，任务完成后切为最终结果；企业微信用流式消息刷新（超 10 分钟自动换流续传）；
 - **高风险操作审批卡片**：写文件、删文件、推代码等高风险操作弹审批卡片，决策、操作人和时间写入 `logs/audit.log`；
 - **终端与 IM 双向会话延续**：本机终端和 IM 共享 Claude Code 原生会话，离开工位在 IM 接手，回到工位在终端继续，上下文不丢失；
@@ -14,7 +14,7 @@
 
 ## 快速开始
 
-1. **首次配置消息平台**：双击 `windows_launch\setup.cmd` 选择平台——`1` 飞书（Playwright 全自动配置，详见 [auto_feishu/README.md](auto_feishu/README.md)）/ `2` 企业微信（手动向导 + 长连接实测）/ `3` 两者都配；
+1. **安装与配置**：双击 `windows_launch\MyClaw-Setup.bat`（装环境 + 模型供应商 + 平台配置一站式向导；macOS 运行 `macos_launch/setup.sh`）——`1` 飞书（Playwright 全自动配置，详见 [auto_feishu/README.md](auto_feishu/README.md)）/ `2` 企业微信（手动向导 + 长连接实测）/ `3` 两者都配；
 2. **启动服务**：双击 `windows_launch\MyClaw.bat`（macOS 用 `macos_launch/MyClaw.command`），任务栏出现托盘图标即表示启动成功。启动脚本会先清理可能存在的残留进程（防止"两个托盘抢互斥锁导致图标不显示"的问题）；
 3. **在 IM 中发消息**给机器人，按引导完成模型供应商、档位和审批模式配置后即可使用。
 

@@ -191,6 +191,82 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM ================= 7. 平台配置（飞书 / 企业微信，原 setup.cmd 已并入） =================
+:PLAT_CONFIG
+echo.
+echo ==============================================
+echo           平台配置（飞书 / 企业微信）
+echo ==============================================
+echo.
+echo  1. 配置飞书 - 个人用（仅创建者可用，不改变应用可用范围）
+echo  2. 配置飞书 - 公用（可用范围全员，支持群成员一键导入白名单）
+echo  3. 飞书群成员一键导入白名单（日常维护工具）
+echo  4. 配置企业微信（手动填 + 连通实测）
+echo  5. 完整配置（飞书公用 + 企业微信）
+echo  0. 跳过（保持现状，重跑本向导可随时再配置）
+echo.
+set "PLAT_CHOICE="
+set /p PLAT_CHOICE=请选择 [0/1/2/3/4/5]: 
+if "%PLAT_CHOICE%"=="1" goto PLAT_FEISHU_P
+if "%PLAT_CHOICE%"=="2" goto PLAT_FEISHU_G
+if "%PLAT_CHOICE%"=="3" goto PLAT_IMPORT
+if "%PLAT_CHOICE%"=="4" goto PLAT_WECOM
+if "%PLAT_CHOICE%"=="5" goto PLAT_FULL
+goto FINISH
+
+:PLAT_FEISHU_P
+set "FEISHU_DEPLOY_MODE=personal"
+call auto_feishu\setup.cmd
+set "FEISHU_DEPLOY_MODE="
+goto FINISH
+
+:PLAT_FEISHU_G
+call auto_feishu\setup.cmd
+call :ask_group_import
+goto FINISH
+
+:PLAT_IMPORT
+set "RUN_TARGET=scripts\import_feishu_group.py"
+goto pyrun
+
+:PLAT_WECOM
+set "RUN_TARGET=scripts\setup_wecom.py"
+goto pyrun
+
+:PLAT_FULL
+call auto_feishu\setup.cmd
+call :ask_group_import
+echo.
+echo 接下来进行企业微信配置...
+set "RUN_TARGET=scripts\setup_wecom.py"
+goto pyrun
+
+:pyrun
+if not exist .\venv\Scripts\python.exe (
+    echo [X] 未找到 .venv，Python 环境安装异常，请重跑本向导。
+    goto FINISH
+)
+".venv\Scripts\python.exe" %RUN_TARGET%
+if errorlevel 1 pause
+goto FINISH
+
+:ask_group_import
+echo.
+echo ==============================================
+echo          飞书公用模式 - 白名单配置
+echo ==============================================
+echo 默认模式：ALLOWED_USERS 保持为空，企业内全员均可直接访问。
+echo.
+set "IMPORT_CHOICE="
+set /p IMPORT_CHOICE=[?] 是否将特定群聊的所有用户 ID 一键导入为白名单？[Y/N] (默认 N): 
+if /i "%IMPORT_CHOICE%"=="Y" (
+    ".venv\Scripts\python.exe" scripts\import_feishu_group.py
+) else (
+    ".venv\Scripts\python.exe" -c "from scripts.import_feishu_group import read_env, upsert_env; wecom=[u for u in read_env().get('ALLOWED_USERS','').split(',') if u.strip().startswith('wecom:')]; upsert_env('ALLOWED_USERS', ','.join(wecom))"
+    echo [OK] 已将 ALLOWED_USERS 设为全员开放模式。
+)
+exit /b 0
+
 :FINISH
 echo.
 echo ===================================================
@@ -200,9 +276,8 @@ if "%NEED_RESTART_CMD%"=="1" (
 )
 echo.
 echo 后续步骤:
-echo   1. 双击本目录 setup.cmd 选择平台配置（飞书自动配置 / 企微向导 / 模型管理）
-echo   2. 双击本目录 MyClaw.bat 启动服务
-echo   3. 在 .env 的 ALLOWED_USERS 中加入使用者飞书 Open ID (留空=允许所有人)
+echo   1. 双击本目录 MyClaw.bat 启动服务（平台与模型配置已在向导内完成，重跑本向导可随时重新配置）
+echo   2. 在 .env 的 ALLOWED_USERS 中加入使用者用户 ID (留空=允许所有人；企微 ID 加 wecom: 前缀)
 
 if not exist "scripts\setup_autostart.bat" goto END_ALL
 echo.

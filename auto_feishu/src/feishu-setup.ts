@@ -124,7 +124,17 @@ class AutomationStepError extends Error {
 }
 
 const DEBUG_ENABLED = process.argv.includes("--debug");
-const PERSONAL_MODE = process.argv.includes("--personal") || (process.env.FEISHU_DEPLOY_MODE || "").trim().toLowerCase() === "personal";
+// 模式入参三种等价写法：--personal / --mode personal / 环境变量 FEISHU_DEPLOY_MODE
+// （mac 的 auto_feishu/setup.sh 传 --mode，Windows 向导传 --personal 或环境变量）
+const MODE_ARG = (() => {
+  const i = process.argv.indexOf("--mode");
+  if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1].trim().toLowerCase();
+  return "";
+})();
+const PERSONAL_MODE =
+  process.argv.includes("--personal") ||
+  MODE_ARG === "personal" ||
+  (process.env.FEISHU_DEPLOY_MODE || "").trim().toLowerCase() === "personal";
 const DEAD_PROXY_PATTERN = /^(?:https?:\/\/)?127\.0\.0\.1:6984\/?$/i;
 
 function clearDeadProxyEnvironment(logger: Logger): void {
@@ -2368,24 +2378,24 @@ async function verifyPermissionsLive(ctx: StepContext): Promise<{ ok: boolean; d
       return { ok: false, detail: "权限列表为空（暂未开通任何权限）" };
     }
 
-    // 核心活体校验：机器人必须拥有发消息的核心权限（im:message:send_as_bot 或 im:message）
+    // 核心活体校验：机器人必须拥有发消息的核心权限（im:message:send_as_bot）。
+    // 注意不能用裸 "im:message" 兜底——任意一条 im:message* 只读权限也会
+    // 命中子串匹配，导致缺发消息权限的应用被误判为已开通而跳过导入。
     const hasSendPermission =
       body.includes("im:message:send_as_bot") ||
       body.includes("以应用的身份发消息") ||
       body.includes("im:message:send") ||
-      body.includes("im:message") ||
       body.includes("获取与发送单聊、群消息");
 
     if (!hasSendPermission) {
       return { ok: false, detail: "缺少关键发消息权限（im:message:send_as_bot / 以应用的身份发消息）" };
     }
 
-    // 核心活体校验：机器人必须拥有接收消息的核心权限（im:message.p2p_msg:readonly 或 im:message）
+    // 核心活体校验：机器人必须拥有接收消息的核心权限（im:message.p2p_msg:readonly）
     const hasReceivePermission =
       body.includes("im:message.p2p_msg:readonly") ||
       body.includes("获取用户发给机器人的单聊消息") ||
       body.includes("读取用户发给机器人的单聊消息") ||
-      body.includes("im:message") ||
       body.includes("获取与发送单聊、群消息");
 
     if (!hasReceivePermission) {

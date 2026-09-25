@@ -20,6 +20,8 @@
 
 代码或配置更新后，使用 `launcher_windows\MyClaw-Restart.bat` 重启，比手动结束后台进程更稳妥。健康检查地址：`http://127.0.0.1:8080/health`。
 
+macOS 状态查看：双击 `launcher_macos/MyClaw.command` 启动后可运行菜单栏（`.venv/bin/pip install rumps && .venv/bin/python scripts/menubar.py`，等价 Windows 托盘：图标实时健康、查看状态含双通道连接、打开日志、退出）；不用菜单栏时 `curl http://127.0.0.1:8080/health` 查状态、`tail -f logs/macos-service.log` 看日志。
+
 ## 主要指令（IM 中发送）
 
 | 分类 | 指令 | 用途 |

@@ -19,6 +19,23 @@ logger = logging.getLogger("myclaw.dispatch")
 # back directly instead of duplicating the history in .sessions/ files.
 
 
+def session_scope_dir(workspace: str) -> str:
+    """会话读取目录：配置 CLAUDE_SESSION_DIR 时固定读该目录的会话，否则跟随当前工作区。
+
+    仅影响“读取”（/session /resume /continue 的列表与预判）；任务运行目录
+    （session.workspace，随 /cd 动态变化）不受影响。
+    """
+    fixed = settings.get_claude_session_dir()
+    if fixed:
+        try:
+            return str(Path(fixed).expanduser().resolve())
+        except Exception:
+            pass
+    if not workspace:
+        return ""
+    return str(Path(workspace).resolve())
+
+
 def _find_claude_session_file(session_id: str) -> Path | None:
     """Locate the jsonl file for a claude session_id under ~/.claude/projects/.
 
@@ -310,7 +327,7 @@ def predict_continue_session(workspace: str) -> dict:
     if not workspace:
         return {"can_continue": False, "session_id": "", "last_summary": ""}
 
-    ws_resolved = str(Path(workspace).resolve())
+    ws_resolved = session_scope_dir(workspace)
     claude_dir = _claude_config_path() or (Path.home() / ".claude")
     encoded_cwd = re.sub(r"[^A-Za-z0-9]", "-", ws_resolved)
 
@@ -368,7 +385,7 @@ def list_workspace_sessions(workspace: str) -> list[dict]:
     """
     if not workspace:
         return []
-    ws_resolved = str(Path(workspace).resolve())
+    ws_resolved = session_scope_dir(workspace)
     claude_dir = _claude_config_path() or (Path.home() / ".claude")
     encoded_cwd = re.sub(r"[^A-Za-z0-9]", "-", ws_resolved)
     project_dir = claude_dir / "projects" / encoded_cwd

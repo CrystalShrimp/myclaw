@@ -30,6 +30,7 @@ from app.dispatch.helpers import (
     get_project_meta,
     list_workspace_sessions,
     predict_continue_session,
+    session_scope_dir,
 )
 from app.dispatch.sessions import session_manager, skey_for
 from app.models.schemas import Session, TaskStatus
@@ -478,6 +479,11 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
             await claude_cli_loop.cancel_and_wait(skey_for(target))
             session.claude_session_id = target_id
             session.context_tokens = 0
+            # 配置了固定会话目录（CLAUDE_SESSION_DIR）时，被恢复的会话属于该
+            # 目录的项目；claude 按 cwd 定位会话，需同步切换工作区
+            scope_ws = session_scope_dir(session.workspace)
+            if settings.get_claude_session_dir() and scope_ws and scope_ws != session.workspace:
+                session.workspace = scope_ws
             session_manager.save_session(session)
             await reply.text(
                 f"🔑 已切换到 Claude Session `{target_id}`。\n"
@@ -512,6 +518,11 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
         await claude_cli_loop.cancel_and_wait(skey_for(target))
         session.claude_session_id = parts[1].strip()
         session.context_tokens = 0
+        # 固定会话目录（CLAUDE_SESSION_DIR）下恢复的会话属于那个项目：
+        # claude --resume 按 cwd 定位会话，需同步切换工作区
+        scope_ws = session_scope_dir(session.workspace)
+        if settings.get_claude_session_dir() and scope_ws and scope_ws != session.workspace:
+            session.workspace = scope_ws
         session_manager.save_session(session)
         ws_config = preferences_manager.load_workspace_config(session.workspace)
         cur_pref = preferences_manager.get(open_id)
@@ -561,6 +572,12 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
             session.claude_session_id = "__continue__"
             session_manager.save_session(session)
             preferences_manager.clear(open_id)
+        # 配置了固定会话目录时，/continue 固定恢复该目录下最近的会话
+        if settings.get_claude_session_dir():
+            scope_ws = session_scope_dir(session.workspace)
+            if scope_ws and scope_ws != session.workspace:
+                session.workspace = scope_ws
+                session_manager.save_session(session)
         await _run_claude(prompt, target, session, skip_classify=True)
         return
 

@@ -78,6 +78,13 @@ audit.log
 auto_feishu/*.txt
 auto_feishu/key.txt
 
+# WeCom setup runtime artifacts and credentials
+auto_wecom/wecom-bot-result.json
+auto_wecom/artifacts/
+auto_wecom/node_modules/
+auto_wecom/dist/
+auto_wecom/*.log
+
 # 归档目录（历史任务产物，不入库）
 archive/
 

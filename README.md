@@ -14,13 +14,13 @@
 
 ## 快速开始
 
-1. **安装与配置**：双击 `launcher_windows\MyClaw-Setup.bat`（装环境 + 模型供应商 + 平台配置一站式向导；macOS 双击 `launcher_macos/MyClaw-Setup.command`）——`1` 飞书（Playwright 全自动配置，详见 [auto_feishu/README.md](auto_feishu/README.md)）/ `2` 企业微信（手动向导 + 长连接实测）/ `3` 两者都配；
+1. **安装与配置**：双击 `launcher_windows\MyClaw-Setup.bat`（装环境 + 模型供应商 + 平台配置一站式向导；macOS 双击 `launcher_macos/MyClaw-Setup.command`）——`1/2` 飞书个人用/公用（Playwright 全自动配置，详见 [auto_feishu/README.md](auto_feishu/README.md)）/ `4` 企业微信（Playwright 全自动：扫码登录→复用/创建智能机器人→凭据写入 + 长连接实测）/ `5` 完整配置（飞书公用 + 企微）；
 2. **启动服务**：双击 `launcher_windows\MyClaw.bat`（macOS 用 `launcher_macos/MyClaw.command`），任务栏出现托盘图标即表示启动成功。启动脚本会先清理可能存在的残留进程（防止"两个托盘抢互斥锁导致图标不显示"的问题）；
 3. **在 IM 中发消息**给机器人，按引导完成模型供应商、档位和审批模式配置后即可使用。
 
 代码或配置更新后，使用 `launcher_windows\MyClaw-Restart.bat` 重启，比手动结束后台进程更稳妥。健康检查地址：`http://127.0.0.1:8080/health`。
 
-macOS 状态查看：双击 `launcher_macos/MyClaw.command` 启动后可运行菜单栏（`.venv/bin/pip install rumps && .venv/bin/python scripts/menubar.py`，等价 Windows 托盘：图标实时健康、查看状态含双通道连接、打开日志、退出）；不用菜单栏时 `curl http://127.0.0.1:8080/health` 查状态、`tail -f logs/macos-service.log` 看日志。
+macOS 状态查看：菜单栏已默认集成（Setup 自动安装组件，`MyClaw.command` 启动后屏幕顶部出现 myclaw 图标，等价 Windows 托盘：●/○ 实时健康、查看状态含双通道连接、打开日志、退出时连同后台服务一起停止）。未装组件的环境自动降级为纯后台服务，此时 `curl http://127.0.0.1:8080/health` 查状态、`tail -f logs/macos-service.log` 看日志。
 
 ## 主要指令（IM 中发送）
 

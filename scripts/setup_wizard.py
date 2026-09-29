@@ -248,8 +248,9 @@ def configure_initial_preferences():
         print(f"\n  [1/4] 选择默认供应商 (Provider) [当前默认: {default_prof}]:")
         for idx, k in enumerate(prof_keys, 1):
             p = profiles[k]
+            label = p.get("label", k) if isinstance(p, dict) else getattr(p, "label", k)
             mark = " (默认)" if k == default_prof else ""
-            print(f"    {idx}. {k} - {p.label}{mark}")
+            print(f"    {idx}. {k} - {label}{mark}")
         raw_p = input(f"  请选择序号或名称 (直接回车 = {default_prof}): ").strip()
         chosen_provider = default_prof
         if raw_p:

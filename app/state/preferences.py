@@ -63,14 +63,14 @@ class PreferencesManager:
             return UserPreferences()
 
     def save_global(self, preferences: UserPreferences) -> None:
-        from app.profiles import set_active_profile
+        from app.profiles import switch_profile
         payload = json.dumps(asdict(preferences), indent=2, ensure_ascii=False)
         with self._lock:
             GLOBAL_PREFERENCES_FILE.parent.mkdir(parents=True, exist_ok=True)
             GLOBAL_PREFERENCES_FILE.write_text(payload, "utf-8")
         if preferences.model:
             try:
-                set_active_profile(preferences.model)
+                switch_profile(preferences.model)
             except Exception:
                 pass
 

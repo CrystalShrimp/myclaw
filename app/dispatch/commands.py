@@ -61,7 +61,7 @@ def _workspace_selection_payload(session: Session | None = None) -> dict:
 
 
 async def _check_and_run_pending(target: UserTarget) -> bool:
-    """Check if all initial setup items (Provider, Level, Mode) are complete.
+    """Check if all initial setup items (Provider, Level, Effort, Mode) are complete.
     If complete and pending_prompt exists, trigger _run_claude automatically.
     """
     open_id = target.user_id
@@ -72,9 +72,10 @@ async def _check_and_run_pending(target: UserTarget) -> bool:
 
     has_provider = preferences.model in profiles
     has_level = preferences.level in ("haiku", "sonnet", "opus")
+    has_effort = preferences.effort in ("low", "medium", "high", "xhigh", "max")
     has_mode = preferences.mode in ("h", "m", "l")
 
-    if has_provider and has_level and has_mode:
+    if has_provider and has_level and has_effort and has_mode:
         session = session_manager.get_user_session(skey_for(target))
 
         if session and session.pending_prompt.strip():
@@ -93,6 +94,7 @@ async def _check_and_run_pending(target: UserTarget) -> bool:
                 "📋 当前运行设置：",
                 f"• 供应商 (Provider)：`{profile_label}`",
                 f"• 规格 (Model Level)：`{preferences.level}`",
+                f"• 思考力度 (Effort)：`{preferences.effort}`",
                 f"• 审批模式 (Mode)：`{mode_lbl}`",
                 "",
                 f"正在全自动为您执行暂存的任务：`{prompt_preview}` ..."
@@ -459,7 +461,7 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
 
         await reply.text(
             f"📁 工作区已切换：`{session.workspace}`{pred_text}\n"
-            f"⚙️ 当前配置：供应商 `{profile_label}` | 规格 `{pref.level or '未设置'}` | 审批模式 `{mode_label}`"
+            f"⚙️ 当前配置：供应商 `{profile_label}` | 规格 `{pref.level or '未设置'}` | 思考力度 `{pref.effort or '未设置'}` | 审批模式 `{mode_label}`"
         )
         return
 
@@ -603,7 +605,7 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
         await reply.text(
             f"✨ **新会话已就绪**\n"
             f"📁 工作区：`{session.workspace}`\n"
-            f"⚙️ 当前配置：供应商 `{profile_label}` | 规格 `{pref.level or '未设置'}` | 审批模式 `{mode_label}`\n\n"
+            f"⚙️ 当前配置：供应商 `{profile_label}` | 规格 `{pref.level or '未设置'}` | 思考力度 `{pref.effort or '未设置'}` | 审批模式 `{mode_label}`\n\n"
             f"💡 全局配置已生效，直接发送消息即可开始对话。"
         )
         return
@@ -902,32 +904,18 @@ async def _run_claude(
             )
             return
 
-        # 默认配置继承：未配置时自动使用系统默认值（零门槛冷启动，免去强制三道卡片阻塞）
-        default_profile = get_active_profile()
-        if default_profile not in profiles and profiles:
-            default_profile = next(iter(profiles.keys()))
-
-        applied_defaults = False
-        if preferences.model not in profiles and default_profile:
-            preferences.model = default_profile
-            applied_defaults = True
-        if preferences.level not in ("haiku", "sonnet", "opus"):
-            preferences.level = getattr(settings, "claude_default_model", "") or "sonnet"
-            applied_defaults = True
-        if preferences.mode not in ("h", "m", "l"):
-            preferences.mode = getattr(settings, "approval_mode", "") or "m"
-            applied_defaults = True
-
-        if applied_defaults:
-            preferences_manager.save(open_id, preferences)
-
         need_provider = preferences.model not in profiles
         need_level = preferences.level not in ("haiku", "sonnet", "opus")
+        need_effort = preferences.effort not in ("low", "medium", "high", "xhigh", "max")
         need_mode = preferences.mode not in ("h", "m", "l")
 
-        if need_provider or need_level or need_mode:
+        if need_provider or need_level or need_effort or need_mode:
             session.pending_prompt = prompt
             session_manager.save_session(session)
+
+            default_profile = preferences.model if preferences.model in profiles else get_active_profile()
+            if default_profile not in profiles and profiles:
+                default_profile = next(iter(profiles.keys()))
 
             missing_views: list[tuple[str, dict]] = []
             if need_provider:
@@ -940,7 +928,12 @@ async def _run_claude(
                 missing_views.append(("level_selection", {
                     "approval_id": uuid.uuid4().hex[:12],
                     "current_model": "",
-                    "models_map": profile_level_models(preferences.model),
+                    "models_map": profile_level_models(default_profile),
+                }))
+            if need_effort:
+                missing_views.append(("effort_selection", {
+                    "approval_id": uuid.uuid4().hex[:12],
+                    "current_effort": "",
                 }))
             if need_mode:
                 missing_views.append(("mode_selection", {

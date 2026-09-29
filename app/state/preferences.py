@@ -22,8 +22,7 @@ class UserPreferences:
 
     @property
     def complete(self) -> bool:
-        # effort 是可选增强项，不参与"初始配置是否完成"的判定
-        return bool(self.model and self.level and self.mode)
+        return bool(self.model and self.level and self.mode and self.effort)
 
 
 GLOBAL_PREFERENCES_FILE = MYCLAW_ROOT / "config" / "global_preferences.json"
@@ -45,24 +44,23 @@ class PreferencesManager:
             model=default_model,
             level=default_level,
             mode=default_mode,
-            effort="",
+            effort="medium",
         )
 
     def get_global(self) -> UserPreferences:
-        defaults = self._get_system_defaults()
         if not GLOBAL_PREFERENCES_FILE.exists():
-            return defaults
+            return UserPreferences()
         try:
             data = json.loads(GLOBAL_PREFERENCES_FILE.read_text("utf-8"))
             return UserPreferences(
-                model=str(data.get("model", "") or defaults.model),
-                level=str(data.get("level", "") or defaults.level),
-                mode=str(data.get("mode", "") or defaults.mode),
+                model=str(data.get("model", "")),
+                level=str(data.get("level", "")),
+                mode=str(data.get("mode", "")),
                 effort=str(data.get("effort", "")),
             )
         except Exception as exc:
             logger.warning("Failed to load global preferences: %s", exc)
-            return defaults
+            return UserPreferences()
 
     def save_global(self, preferences: UserPreferences) -> None:
         from app.profiles import set_active_profile
@@ -85,10 +83,10 @@ class PreferencesManager:
         self.save_global(preferences)
 
     def clear(self, open_id: str) -> UserPreferences:
-        """重置配置回系统默认值。"""
-        defaults = self._get_system_defaults()
-        self.save_global(defaults)
-        return defaults
+        """清空初始配置，以便重新触发四项初始配置卡片（Provider / Model / Effort / Mode）。"""
+        empty = UserPreferences()
+        self.save_global(empty)
+        return empty
 
     def load_workspace_config(self, workspace: str) -> UserPreferences | None:
         """已废除项目内配置记忆，统一使用全局配置。"""

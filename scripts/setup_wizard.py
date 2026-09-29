@@ -268,30 +268,71 @@ def ensure_playwright_chromium(auto_feishu_dir: Path) -> bool:
     return code == 0
 
 
-def apply_personal_allowlist():
-    """个人用模式收尾：后端 ALLOWED_USERS 置空。
+def fetch_app_creator_open_id(app_id: str, app_secret: str) -> str:
+    """用应用自身凭据查创建者 open_id（application/v6/applications 的 creator_id）。
 
-    隔离由飞书侧「可用范围=部分成员（仅创建者）」保证（发版步骤已强制设置），
-    后端名单置空即创建者本人可用、其他员工在飞书层就接触不到机器人。
-    仅当 result.json 确认发布成功（published=true，含"已发布且范围正确而跳过发版"）
-    才清空——避免复用公用应用且发版失败时，把全员可用的应用误开成后端全放行。
+    返回的 open_id 与消息事件里发送者的 open_id 同为该应用作用域，可直接进白名单。
     """
-    result_file = ROOT_DIR / "auto_feishu" / "feishu-app-result.json"
-    published = False
-    try:
-        result = json.loads(result_file.read_text(encoding="utf-8"))
-        published = bool(result.get("published"))
-    except Exception:
-        published = False
+    import urllib.request
 
-    if not published:
-        print("[!] 发版状态未确认，未改动 ALLOWED_USERS（当前名单保持原样）。")
-        print("    个人用模式依赖飞书侧“可用范围=仅创建者”做隔离，请重跑配置直至发布成功。")
+    def call(method: str, url: str, body: dict | None = None, headers: dict | None = None) -> dict:
+        import urllib.error
+
+        h = {"Content-Type": "application/json; charset=utf-8"}
+        if headers:
+            h.update(headers)
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode() if body else None,
+            headers=h,
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            # 飞书的 4xx 带 JSON 错误体，读出来才有 code/msg 可判
+            try:
+                return json.loads(e.read())
+            except Exception:
+                raise
+
+    tok = call(
+        "POST",
+        "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+        {"app_id": app_id, "app_secret": app_secret},
+    )["tenant_access_token"]
+    # 该接口必须带 lang 参数，否则直接 400
+    info = call(
+        "GET",
+        f"https://open.feishu.cn/open-apis/application/v6/applications/{app_id}?lang=zh_cn",
+        headers={"Authorization": "Bearer " + tok},
+    )
+    if info.get("code") != 0:
+        raise RuntimeError(f"code={info.get('code')} {info.get('msg')}")
+    return (info.get("data", {}).get("app", {}) or {}).get("creator_id", "")
+
+
+def apply_personal_allowlist():
+    """个人用模式收尾：把应用创建者的 open_id 写入 ALLOWED_USERS（名单里明确只放本人）。"""
+    app_id = get_env_value("FEISHU_APP_ID")
+    app_secret = get_env_value("FEISHU_APP_SECRET")
+    if not app_id or not app_secret or app_id.startswith("cli_x"):
+        print("[!] .env 中缺少有效的飞书凭据，未改动 ALLOWED_USERS。")
+        return
+
+    try:
+        creator = fetch_app_creator_open_id(app_id, app_secret)
+    except Exception as e:
+        print(f"[!] 查询应用创建者失败（{e}），未改动 ALLOWED_USERS。")
+        return
+    if not creator:
+        print("[!] 未获取到应用创建者 open_id，未改动 ALLOWED_USERS。")
         return
 
     from scripts.import_feishu_group import upsert_env
-    upsert_env("ALLOWED_USERS", "")
-    print("[OK] 个人用模式：ALLOWED_USERS 已置空（隔离由飞书侧可用范围=仅创建者保证）。")
+    upsert_env("ALLOWED_USERS", creator)
+    print(f"[OK] 个人用模式：ALLOWED_USERS 已写入应用创建者 {creator}（名单里明确仅本人可用）。")
     print("     若服务正在运行，请重启服务使配置生效。")
 
 

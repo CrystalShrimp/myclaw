@@ -7,6 +7,7 @@ MyClaw 跨平台交互配置向导。
 
 import os
 import sys
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -30,6 +31,9 @@ if sys.platform == "win32":
         pass
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+# 以 python scripts/setup_wizard.py 方式启动时 sys.path[0] 是 scripts/ 目录，
+# `from scripts.import_feishu_group import ...` 需要项目根目录在搜索路径上
+sys.path.insert(0, str(ROOT_DIR))
 
 
 def run_cmd(cmd: list[str], cwd: Path | None = None, check: bool = False, env: dict | None = None) -> int:
@@ -264,6 +268,33 @@ def ensure_playwright_chromium(auto_feishu_dir: Path) -> bool:
     return code == 0
 
 
+def apply_personal_allowlist():
+    """个人用模式收尾：后端 ALLOWED_USERS 置空。
+
+    隔离由飞书侧「可用范围=部分成员（仅创建者）」保证（发版步骤已强制设置），
+    后端名单置空即创建者本人可用、其他员工在飞书层就接触不到机器人。
+    仅当 result.json 确认发布成功（published=true，含"已发布且范围正确而跳过发版"）
+    才清空——避免复用公用应用且发版失败时，把全员可用的应用误开成后端全放行。
+    """
+    result_file = ROOT_DIR / "auto_feishu" / "feishu-app-result.json"
+    published = False
+    try:
+        result = json.loads(result_file.read_text(encoding="utf-8"))
+        published = bool(result.get("published"))
+    except Exception:
+        published = False
+
+    if not published:
+        print("[!] 发版状态未确认，未改动 ALLOWED_USERS（当前名单保持原样）。")
+        print("    个人用模式依赖飞书侧“可用范围=仅创建者”做隔离，请重跑配置直至发布成功。")
+        return
+
+    from scripts.import_feishu_group import upsert_env
+    upsert_env("ALLOWED_USERS", "")
+    print("[OK] 个人用模式：ALLOWED_USERS 已置空（隔离由飞书侧可用范围=仅创建者保证）。")
+    print("     若服务正在运行，请重启服务使配置生效。")
+
+
 def setup_feishu(mode: str):
     """直接使用 npm 直驱执行 auto_feishu 自动化，无中间层，杜绝二次询问与参数丢失。"""
     auto_feishu_dir = ROOT_DIR / "auto_feishu"
@@ -294,6 +325,8 @@ def setup_feishu(mode: str):
     code = run_cmd(npm_cmd, cwd=auto_feishu_dir, env=custom_env)
     if code == 0:
         print(f"[OK] 飞书{mode_label}模式自动化配置完成。")
+        if mode == "personal":
+            apply_personal_allowlist()
     else:
         print(f"[!] 飞书自动化配置退出，返回码: {code}")
 
@@ -330,6 +363,76 @@ def configure_autostart():
         run_cmd(["bash", str(autostart_script)])
 
 
+def collect_init_status() -> dict:
+    """收集前三步初始化状态（工作空间 / 运行环境 / 模型供应商）。"""
+    workspace = get_env_value("DEFAULT_WORKSPACE")
+
+    node_version = ""
+    if shutil.which("node"):
+        try:
+            node_version = subprocess.check_output(["node", "-v"], text=True).strip()
+        except Exception:
+            node_version = "(已安装)"
+    claude_ready = shutil.which("claude") is not None
+
+    active_profile = ""
+    active_profile_file = ROOT_DIR / "config" / "active_profile"
+    if active_profile_file.exists():
+        p_name = active_profile_file.read_text(encoding="utf-8", errors="replace").strip()
+        if p_name and (ROOT_DIR / "config" / f"settings_{p_name}.json").exists():
+            active_profile = p_name
+
+    return {
+        "workspace": workspace,
+        "workspace_done": bool(workspace.strip()),
+        "node_version": node_version,
+        "claude_ready": claude_ready,
+        "environment_done": bool(node_version) and claude_ready,
+        "model_profile": active_profile,
+        "model_done": bool(active_profile),
+    }
+
+
+def run_init_steps(force: bool = False):
+    """执行前三步初始化。force=True 全部重跑；否则只补跑未完成的步骤。"""
+    status = collect_init_status()
+    steps = [
+        ("workspace", "工作空间", confirm_workspaces),
+        ("environment", "运行环境", check_environment),
+        ("model", "模型供应商", check_or_setup_models),
+    ]
+    for key, label, fn in steps:
+        if force or not status[f"{key}_done"]:
+            fn()
+        else:
+            print(f"[OK] {label}已完成初始化，跳过。")
+
+
+def show_init_config():
+    """查看前三步初始化配置信息，可选择重跑。"""
+    status = collect_init_status()
+    print("\n" + "=" * 60)
+    print("        初始化配置信息（Step 1-3 初始化设置）")
+    print("=" * 60)
+    print()
+    print("  【Step 1 工作空间】")
+    print(f"    DEFAULT_WORKSPACE = {status['workspace'] or '(未配置)'}")
+    print("  【Step 2 运行环境】")
+    print(f"    Node.js         : {status['node_version'] or '未检测到（auto_feishu 需要 v20+）'}")
+    print(f"    Claude Code CLI : {'已就绪' if status['claude_ready'] else '未检测到'}")
+    print("  【Step 3 模型供应商】")
+    print(f"    当前生效 profile : {status['model_profile'] or '(未配置)'}")
+    print()
+
+    if status["workspace_done"] and status["environment_done"] and status["model_done"]:
+        print("  [OK] 初始化设置已全部完成。")
+    else:
+        print("  [!] 存在未完成的初始化项。")
+    choice = input("[?] 是否重新运行初始化设置（Step 1-3）？[y/N] (直接回车 = 否): ").strip().lower()
+    if choice == "y":
+        run_init_steps(force=True)
+
+
 def main_menu():
     """【Step 4/4】消息平台接入与配置中心。"""
     while True:
@@ -342,17 +445,18 @@ def main_menu():
         print(" 3. 飞书群成员一键导入白名单（日常维护工具）")
         print("\n【企业微信接入】")
         print(" 4. 配置企业微信（长连接自建应用 + 连通实测）")
-        print("\n【组合与模型管理】")
         print(" 5. 完整配置（飞书公用 + 企业微信）")
+        print("\n【模型供应商】")
         print(" 6. 模型与供应商管理（切换/添加/修改/测试模型）")
         print("\n【系统】")
         print(" 7. 配置开机自启（每次开机自动静默后台运行）")
+        print(" 8. 查看初始化配置（工作空间/运行环境/模型供应商）")
         print("\n【退出】")
         print(" 0. 退出向导（完成并显示启动说明）")
         print()
 
         try:
-            choice = input("请选择 [0/1/2/3/4/5/6/7]: ").strip()
+            choice = input("请选择 [0-8]: ").strip()
         except (KeyboardInterrupt, EOFError):
             print("\n已退出。")
             break
@@ -375,6 +479,8 @@ def main_menu():
             run_cmd([sys.executable, str(ROOT_DIR / "scripts" / "manage_models.py")])
         elif choice == "7":
             configure_autostart()
+        elif choice == "8":
+            show_init_config()
         elif choice in ("0", "q", "exit"):
             finish_setup()
             break
@@ -400,9 +506,12 @@ def finish_setup():
 
 if __name__ == "__main__":
     os.chdir(ROOT_DIR)
-    # 4 步极简引导流
-    confirm_workspaces()
-    check_environment()
-    check_or_setup_models()
+    # 前三步为一次性初始化：已完成则跳过，直接进入 Step 4 配置中心
+    status = collect_init_status()
+    if status["workspace_done"] and status["environment_done"] and status["model_done"]:
+        print("[OK] 初始化设置已完成（工作空间 / 运行环境 / 模型供应商），跳过 Step 1-3。")
+        print("     （如需查看或重新配置初始化项：配置中心选 8）")
+    else:
+        run_init_steps()
     main_menu()
 

@@ -19,16 +19,26 @@ logger = logging.getLogger("myclaw.dispatch")
 # back directly instead of duplicating the history in .sessions/ files.
 
 
-def session_scope_dir(workspace: str) -> str:
-    """会话读取目录：配置 CLAUDE_SESSION_DIR 时固定读该目录的会话，否则跟随当前工作区。
+def _is_claude_storage_dir(p: Path) -> bool:
+    """判断路径是否为 Claude Code 底层历史会话存储目录（如 ~/.claude 或 ~/.claude/projects）。"""
+    name = p.name.lower()
+    if name == ".claude" or (name == "projects" and p.parent.name.lower() == ".claude"):
+        return True
+    if (p / "history.jsonl").is_file() or (p / "projects").is_dir():
+        return True
+    return False
 
-    仅影响“读取”（/session /resume /continue 的列表与预判）；任务运行目录
-    （session.workspace，随 /cd 动态变化）不受影响。
+
+def session_scope_dir(workspace: str) -> str:
+    """会话读取目录：若 CLAUDE_SESSION_DIR 为电脑端全局历史会话存储目录（如 ~/.claude/projects），
+    则跟随当前工作区读取；若显式配置为某特定工程目录则读该工程目录。
     """
     fixed = settings.get_claude_session_dir()
     if fixed:
         try:
-            return str(Path(fixed).expanduser().resolve())
+            fp = Path(fixed).expanduser().resolve()
+            if not _is_claude_storage_dir(fp):
+                return str(fp)
         except Exception:
             pass
     if not workspace:
@@ -217,14 +227,18 @@ def get_project_meta(path_str: str) -> dict:
 
 
 def _claude_config_path() -> Path | None:
-    configured = settings.claude_data_dir.strip()
-    if not configured:
-        home_claude = (Path.home() / ".claude").resolve()
-        return home_claude if home_claude.exists() else None
-    path = Path(configured).expanduser().resolve()
-    if not path.exists() or not path.is_dir():
-        return None
-    return path
+    for raw in (settings.claude_data_dir.strip(), settings.get_claude_session_dir()):
+        if not raw:
+            continue
+        p = Path(raw).expanduser().resolve()
+        if not p.exists() or not p.is_dir():
+            continue
+        if p.name.lower() == "projects" and (p.parent / "projects").is_dir():
+            return p.parent
+        if _is_claude_storage_dir(p):
+            return p
+    home_claude = (Path.home() / ".claude").resolve()
+    return home_claude if home_claude.exists() else None
 
 
 def _detected_claude_config_path() -> Path:

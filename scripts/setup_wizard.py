@@ -102,19 +102,35 @@ def upsert_env_key(key: str, value: str):
 
 
 def get_recommended_workspace() -> Path:
-    """获取跨平台智能推荐的工作空间目录。"""
-    if sys.platform != "win32":
-        return Path.home() / "projects"
-    # Windows: 如果存在 D 盘，推荐 D:\projects，否则推荐 C:\projects
-    if Path("D:\\").exists():
-        return Path("D:\\projects")
-    return Path("C:\\projects")
+    """获取默认初始运行目录：默认为当前项目所在目录。"""
+    return ROOT_DIR.resolve()
+
+
+def infer_claude_session_dir() -> Path:
+    """自动推断电脑端 Claude Code 的历史会话存储目录。"""
+    candidates: list[Path] = []
+    env_cfg = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if env_cfg:
+        cfg_path = Path(env_cfg).expanduser()
+        candidates.extend([cfg_path / "projects", cfg_path])
+
+    home_claude = Path.home() / ".claude"
+    candidates.extend([home_claude / "projects", home_claude])
+
+    for cand in candidates:
+        try:
+            if cand.exists() and cand.is_dir():
+                return cand.resolve()
+        except Exception:
+            continue
+
+    return (home_claude / "projects").resolve()
 
 
 def confirm_directories():
-    """【Step 2/4】初始运行目录与 Claude Code 会话目录确认。"""
+    """【Step 2/4】初始运行目录与 Claude Code 历史会话目录确认。"""
     print("\n" + "=" * 60)
-    print("   【Step 2/4】初始运行目录与 Claude Code 会话目录确认")
+    print("   【Step 2/4】初始运行目录与 Claude Code 历史会话目录确认")
     print("=" * 60)
     print()
     print(f"  MyClaw 程序运行目录 (只读): {ROOT_DIR.resolve()}")
@@ -130,10 +146,11 @@ def confirm_directories():
         else:
             env_file.touch()
 
-    def ask_path(label: str, recommended: Path, hint: str) -> Path:
+    def ask_path(label: str, recommended: Path, hint: str = "") -> Path:
         print(f"  {label}")
         print(f"      当前推荐: {recommended}")
-        print(f"      >> {hint}")
+        if hint:
+            print(f"      >> {hint}")
         choice = input("[?] 是否直接采用？[Y/N] (直接回车 = 采用): ").strip().lower()
         final = recommended
         if choice == "n":
@@ -150,13 +167,12 @@ def confirm_directories():
         print()
         return final
 
-    # 1. 初始运行目录：新任务默认在此运行；IM 里 /cd 可随时切换，互不影响
+    # 1. 初始运行目录：初始任务临时在此运行，后续可用/cd 命令切换至目标目录
     configured = get_env_value("DEFAULT_WORKSPACE")
     rec_ws = Path(configured).expanduser() if configured else get_recommended_workspace()
     final_ws = ask_path(
-        "[1] 初始运行目录（新任务默认在此运行；IM 里 /cd 可随时切换，互不影响）:",
+        "[1] 初始运行目录：初始任务临时在此运行，后续可用/cd 命令切换至目标目录",
         rec_ws,
-        "AI 编写业务代码、读取项目、执行终端指令的实际工程目录。",
     )
     try:
         final_ws.mkdir(parents=True, exist_ok=True)
@@ -165,17 +181,16 @@ def confirm_directories():
         print(f"[!] 创建目录遇到问题 ({e})，但已记录该路径。")
     upsert_env_key("DEFAULT_WORKSPACE", str(final_ws))
 
-    # 2. Claude Code 会话目录：/session /resume /continue 固定读取该目录下的终端会话
+    # 2. Claude Code 历史会话目录：读取电脑端的历史会话
     sess_configured = get_env_value("CLAUDE_SESSION_DIR")
-    rec_sess = Path(sess_configured).expanduser() if sess_configured else final_ws
+    rec_sess = Path(sess_configured).expanduser() if sess_configured else infer_claude_session_dir()
     final_sess = ask_path(
-        "[2] Claude Code 会话目录（读取该目录下的终端会话，供 /session /resume /continue 使用）:",
+        "[2] Claude Code 历史会话目录：读取电脑端的历史会话",
         rec_sess,
-        "填你平时在终端里跑 Claude Code 的项目目录，即可在 IM 里续接终端会话。",
     )
     try:
         final_sess.mkdir(parents=True, exist_ok=True)
-        print(f"[OK] 会话目录已就绪: {final_sess}")
+        print(f"[OK] 历史会话目录已就绪: {final_sess}")
     except Exception as e:
         print(f"[!] 创建目录遇到问题 ({e})，但已记录该路径。")
     upsert_env_key("CLAUDE_SESSION_DIR", str(final_sess))
@@ -522,7 +537,7 @@ def show_init_config():
     print(f"    Claude Code CLI : {'已就绪' if status['claude_ready'] else '未检测到'}")
     print("  【Step 2 目录】")
     print(f"    初始运行目录 (DEFAULT_WORKSPACE)  : {status['workspace'] or '(未配置)'}")
-    print(f"    会话目录     (CLAUDE_SESSION_DIR) : {status['session_dir'] or '(未配置，跟随当前工作区)'}")
+    print(f"    历史会话目录 (CLAUDE_SESSION_DIR) : {status['session_dir'] or '(未配置，自动读取 ~/.claude/projects)'}")
     print("  【Step 3 模型供应商】")
     print(f"    当前生效 profile : {status['model_profile'] or '(未配置)'}")
     print()

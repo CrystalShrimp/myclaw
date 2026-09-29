@@ -707,18 +707,17 @@ def main_menu():
         print(" 3. └─ 一键授权飞书群成员：基于2，限制仅特定群成员可用")
         print("\n【企业微信接入】")
         print(" 4. 配置企业微信")
-        print(" 5. 完整配置（飞书公用 + 企业微信）")
         print("\n【模型供应商】")
-        print(" 6. 模型供应商与初始运行配置（API Key / Provider / Model / Effort / Mode）")
+        print(" 5. 模型供应商与初始运行配置（API Key / Provider / Model / Effort / Mode）")
         print("\n【系统】")
-        print(" 7. 配置开机自启（每次开机自动静默后台运行）")
-        print(" 8. 查看/重置初始化配置（工作空间/运行环境/模型与初始偏好）")
+        print(" 6. 配置开机自启（每次开机自动静默后台运行）")
+        print(" 7. 查看/重置初始化配置（工作空间/运行环境/模型与初始偏好）")
         print("\n【退出】")
         print(" 0. 退出向导（完成并显示启动说明）")
         print()
 
         try:
-            choice = input("请选择 [0-8]: ").strip()
+            choice = input("请选择 [0-7]: ").strip()
         except (KeyboardInterrupt, EOFError):
             print("\n已退出。")
             break
@@ -733,16 +732,11 @@ def main_menu():
         elif choice == "4":
             setup_wecom_auto()
         elif choice == "5":
-            setup_feishu("public")
-            ask_group_import()
-            print("\n[*] 接下来进入企业微信配置...")
-            setup_wecom_auto()
-        elif choice == "6":
             run_cmd([sys.executable, str(ROOT_DIR / "scripts" / "manage_models.py")])
             configure_initial_preferences()
-        elif choice == "7":
+        elif choice == "6":
             configure_autostart()
-        elif choice == "8":
+        elif choice == "7":
             show_init_config()
         elif choice in ("0", "q", "exit"):
             finish_setup()
@@ -762,7 +756,7 @@ def finish_setup():
     else:
         print("  启动服务      : 双击 launcher_macos/MyClaw.command（或运行 bash scripts/restart_mac.sh）")
         print("  重新配置      : 双击 launcher_macos/MyClaw-Setup.command 重跑向导")
-    print("  开机自启      : 配置中心选 7")
+    print("  开机自启      : 配置中心选 6")
     print("  健康检查      : curl http://127.0.0.1:8080/health")
     print("=" * 50)
 
@@ -773,7 +767,7 @@ if __name__ == "__main__":
     status = collect_init_status()
     if status["workspace_done"] and status["environment_done"] and status["model_done"]:
         print("[OK] 初始化设置已完成（工作空间 / 运行环境 / 模型供应商），跳过 Step 1-3。")
-        print("     （如需查看或重新配置初始化项：配置中心选 8）")
+        print("     （如需查看或重新配置初始化项：配置中心选 7）")
     else:
         run_init_steps()
     main_menu()

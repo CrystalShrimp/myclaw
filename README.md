@@ -58,8 +58,8 @@ launcher_macos/   macOS 客户入口
 
 ## 配置入口
 
-- **`.env`**：从 `config/env.example` 复制。包含飞书凭据（`FEISHU_*`）、企业微信凭据（`WECOM_BOT_ID`/`WECOM_SECRET`，长连接模式）、Claude CLI 路径、飞书访问白名单（`ALLOWED_USERS`，留空=全员）、企微访问白名单（`WECOM_ALLOWED_USERS`，留空=全员）、审批模式与超时、服务端口等；
-- **`config/settings_<name>.json`**：模型供应商 profile，参考 `config/settings_<name>.example.json`；当前生效项由 `config/active_profile` 指定；
+- **`.env`**：从 `config/examples/env.example` 复制。包含飞书凭据（`FEISHU_*`）、企业微信凭据（`WECOM_BOT_ID`/`WECOM_SECRET`，长连接模式）、Claude CLI 路径、飞书访问白名单（`ALLOWED_USERS`，留空=全员）、企微访问白名单（`WECOM_ALLOWED_USERS`，留空=全员）、审批模式与超时、服务端口等；
+- **`config/settings_<name>.json`**：模型供应商 profile，参考 `config/examples/settings_<name>.example.json`；当前生效项由 `config/active_profile` 指定；
 - **`config/approval_rules.json`**：平衡模式（`m`）下的审批规则，缺失或非法时回退到 `app/hooks/router.py` 内置规则；
 - **`icon.png` / `icon.jpg` / `icon.ico`**（可选）：放到项目根目录可自定义托盘图标，缺失时使用系统默认图标。
 

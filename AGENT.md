@@ -78,7 +78,7 @@
 | 路径 | 作用说明 |
 | :--- | :--- |
 | `.env` | 核心环境变量配置文件（飞书 `FEISHU_APP_ID`/`FEISHU_APP_SECRET`、目录配置、访问控制白名单等）。 |
-| `config/settings_*.json` | 各大模型供应商的 API 密钥与模型名配置档（`*.example.json` 为模板，切勿删除模板）。 |
+| `config/settings_*.json` | 各大模型供应商的 API 密钥与模型名配置档（模板统一存放在 `config/examples/*.example.json`，切勿删除模板）。 |
 | `config/active_profile` | 当前默认激活的模型供应商名称。 |
 | `auto_feishu/feishu-app-result.json` | 飞书自动化脚本的断点续跑状态记录。 |
 | `auto_feishu/artifacts/` | Playwright 飞书浏览器登录态缓存（`feishu-user-data`）及排障截图/HTML 快照。 |

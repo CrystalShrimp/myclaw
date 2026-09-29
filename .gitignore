@@ -13,9 +13,9 @@ wheels/
 .env
 api.txt
 
-# Profile configs (contain API tokens) — track .example.json templates only
+# Profile configs (contain API tokens) — templates live in config/examples/
 config/settings_*.json
-!config/settings_*.example.json
+!config/examples/*.example.json
 
 # Local/personal config (machine-specific paths, runtime state, generated)
 config/shortcuts.json

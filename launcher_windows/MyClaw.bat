@@ -4,7 +4,7 @@ cd /d "%~dp0.."
 
 if not exist .env (
     echo [ERROR] .env 文件不存在！
-    echo 请先复制 config\env.example 为 .env 并填入飞书凭据。
+    echo 请先复制 config\examples\env.example 为 .env 并填入飞书凭据。
     pause
     exit /b 2
 )

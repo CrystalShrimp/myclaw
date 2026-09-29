@@ -72,7 +72,7 @@ def upsert_env_key(key: str, value: str):
     """更新或插入 .env 文件中的配置项。"""
     env_file = ROOT_DIR / ".env"
     if not env_file.exists():
-        example_file = ROOT_DIR / "config" / "env.example"
+        example_file = ROOT_DIR / "config" / "examples" / "env.example"
         if example_file.exists():
             shutil.copy(example_file, env_file)
         else:
@@ -138,7 +138,7 @@ def confirm_directories():
 
     # 确保 .env 基础文件存在
     env_file = ROOT_DIR / ".env"
-    example_file = ROOT_DIR / "config" / "env.example"
+    example_file = ROOT_DIR / "config" / "examples" / "env.example"
     if not env_file.exists():
         if example_file.exists():
             shutil.copy(example_file, env_file)
@@ -227,10 +227,115 @@ def check_environment():
         print("[OK] Claude Code CLI 已就绪。")
 
 
+def configure_initial_preferences():
+    """交互式配置初始运行偏好：Provider / Model / Effort / Mode，并写入 config/global_preferences.json。"""
+    from app.profiles import discover_profiles, get_active_profile
+    from app.state.preferences import UserPreferences, preferences_manager
+
+    current = preferences_manager.get_global()
+    profiles = discover_profiles()
+    active_prof = get_active_profile() or current.model or (next(iter(profiles.keys())) if profiles else "glm")
+
+    print("\n" + "-" * 60)
+    print("  【初始运行偏好配置】(Provider / Model / Effort / Mode)")
+    print("-" * 60)
+
+    # 1. Provider
+    if profiles:
+        prof_keys = list(profiles.keys())
+        default_prof = active_prof if active_prof in prof_keys else prof_keys[0]
+        print(f"\n  [1/4] 选择默认供应商 (Provider) [当前默认: {default_prof}]:")
+        for idx, k in enumerate(prof_keys, 1):
+            p = profiles[k]
+            mark = " (默认)" if k == default_prof else ""
+            print(f"    {idx}. {k} - {p.label}{mark}")
+        raw_p = input(f"  请选择序号或名称 (直接回车 = {default_prof}): ").strip()
+        chosen_provider = default_prof
+        if raw_p:
+            if raw_p.isdigit() and 1 <= int(raw_p) <= len(prof_keys):
+                chosen_provider = prof_keys[int(raw_p) - 1]
+            elif raw_p in profiles:
+                chosen_provider = raw_p
+    else:
+        chosen_provider = active_prof
+
+    # 2. Model (sonnet / opus / haiku)
+    level_options = [
+        ("sonnet", "Sonnet（默认平衡，推荐日常编码）"),
+        ("opus", "Opus（最强推理，适合复杂架构）"),
+        ("haiku", "Haiku（极速轻量，适合简单问答）"),
+    ]
+    default_level = current.level if current.level in ("sonnet", "opus", "haiku") else "sonnet"
+    print(f"\n  [2/4] 选择默认模型规格 (Model) [当前默认: {default_level}]:")
+    for idx, (val, desc) in enumerate(level_options, 1):
+        mark = " (默认)" if val == default_level else ""
+        print(f"    {idx}. {val} - {desc}{mark}")
+    raw_l = input(f"  请选择 [1-3] 或名称 (直接回车 = {default_level}): ").strip().lower()
+    chosen_level = default_level
+    if raw_l:
+        if raw_l.isdigit() and 1 <= int(raw_l) <= len(level_options):
+            chosen_level = level_options[int(raw_l) - 1][0]
+        elif raw_l in ("sonnet", "opus", "haiku"):
+            chosen_level = raw_l
+
+    # 3. Effort (low / medium / high / xhigh / max)
+    effort_options = [
+        ("medium", "Medium（默认平衡）"),
+        ("high", "High（深度思考）"),
+        ("xhigh", "XHigh（超强推理）"),
+        ("max", "Max（极限思考）"),
+        ("low", "Low（快速响应）"),
+    ]
+    valid_efforts = tuple(k for k, _ in effort_options)
+    default_effort = current.effort if current.effort in valid_efforts else "medium"
+    print(f"\n  [3/4] 选择默认思考力度 (Effort) [当前默认: {default_effort}]:")
+    for idx, (val, desc) in enumerate(effort_options, 1):
+        mark = " (默认)" if val == default_effort else ""
+        print(f"    {idx}. {val} - {desc}{mark}")
+    raw_e = input(f"  请选择 [1-5] 或名称 (直接回车 = {default_effort}): ").strip().lower()
+    chosen_effort = default_effort
+    if raw_e:
+        if raw_e.isdigit() and 1 <= int(raw_e) <= len(effort_options):
+            chosen_effort = effort_options[int(raw_e) - 1][0]
+        elif raw_e in valid_efforts:
+            chosen_effort = raw_e
+
+    # 4. Mode (m / h / l)
+    mode_options = [
+        ("m", "中权限 (m) - 读/搜索自动放行，修改代码与执行命令需确认（推荐）"),
+        ("h", "高权限 (h) - 全自动执行，无需人工确认"),
+        ("l", "低权限 (l) - 所有工具调用均需人工确认"),
+    ]
+    default_mode = current.mode if current.mode in ("m", "h", "l") else "m"
+    print(f"\n  [4/4] 选择默认权限审批模式 (Mode) [当前默认: {default_mode}]:")
+    for idx, (val, desc) in enumerate(mode_options, 1):
+        mark = " (默认)" if val == default_mode else ""
+        print(f"    {idx}. {desc}{mark}")
+    raw_m = input(f"  请选择 [1-3] 或 m/h/l (直接回车 = {default_mode}): ").strip().lower()
+    chosen_mode = default_mode
+    if raw_m:
+        if raw_m.isdigit() and 1 <= int(raw_m) <= len(mode_options):
+            chosen_mode = mode_options[int(raw_m) - 1][0]
+        elif raw_m in ("m", "h", "l"):
+            chosen_mode = raw_m
+
+    prefs = UserPreferences(
+        model=chosen_provider,
+        level=chosen_level,
+        mode=chosen_mode,
+        effort=chosen_effort,
+    )
+    preferences_manager.save_global(prefs)
+    print(
+        f"\n[OK] 初始运行配置已保存: Provider={chosen_provider} | Model={chosen_level} "
+        f"| Effort={chosen_effort} | Mode={chosen_mode}"
+    )
+
+
 def check_or_setup_models():
-    """【Step 3/4】模型供应商配置 (Model & Provider)。"""
+    """【Step 3/4】模型供应商与初始偏好配置 (Provider / Model / Effort / Mode)。"""
     print("\n" + "=" * 60)
-    print("      【Step 3/4】模型与供应商配置 (Model & Provider)")
+    print("  【Step 3/4】模型供应商与初始运行配置 (Provider/Model/Effort/Mode)")
     print("=" * 60)
     print()
 
@@ -245,8 +350,8 @@ def check_or_setup_models():
             current_model = p_name
 
     if has_profile:
-        print(f"[OK] 当前生效模型供应商: {current_model}（已配置）")
-        c = input("[?] 是否需要调整或重新配置模型供应商？[y/N] (直接回车 = 保持当前): ").strip().lower()
+        print(f"[OK] 当前生效模型供应商: {current_model}（已配置 API Key）")
+        c = input("[?] 是否需要调整或重新配置模型供应商 API Key？[y/N] (直接回车 = 保持当前): ").strip().lower()
         if c == "y":
             run_cmd([sys.executable, str(ROOT_DIR / "scripts" / "manage_models.py")])
     else:
@@ -254,6 +359,8 @@ def check_or_setup_models():
         c = input("[?] 是否立即配置模型供应商 API Key？[Y/N] (直接回车 = 是): ").strip().lower()
         if c in ("", "y"):
             run_cmd([sys.executable, str(ROOT_DIR / "scripts" / "manage_models.py")])
+
+    configure_initial_preferences()
 
 
 def ensure_playwright_chromium(auto_feishu_dir: Path) -> bool:
@@ -479,7 +586,9 @@ def configure_autostart():
 
 
 def collect_init_status() -> dict:
-    """收集前三步初始化状态（运行环境 / 目录 / 模型供应商）。"""
+    """收集前三步初始化状态（运行环境 / 目录 / 模型供应商与初始偏好）。"""
+    from app.state.preferences import preferences_manager
+
     workspace = get_env_value("DEFAULT_WORKSPACE")
     session_dir = get_env_value("CLAUDE_SESSION_DIR")
 
@@ -498,6 +607,8 @@ def collect_init_status() -> dict:
         if p_name and (ROOT_DIR / "config" / f"settings_{p_name}.json").exists():
             active_profile = p_name
 
+    prefs = preferences_manager.get_global()
+
     return {
         "workspace": workspace,
         "session_dir": session_dir,
@@ -506,7 +617,12 @@ def collect_init_status() -> dict:
         "claude_ready": claude_ready,
         "environment_done": bool(node_version) and claude_ready,
         "model_profile": active_profile,
-        "model_done": bool(active_profile),
+        "pref_provider": prefs.model,
+        "pref_level": prefs.level,
+        "pref_effort": prefs.effort,
+        "pref_mode": prefs.mode,
+        "prefs_complete": prefs.complete,
+        "model_done": bool(active_profile) and prefs.complete,
     }
 
 
@@ -516,7 +632,7 @@ def run_init_steps(force: bool = False):
     steps = [
         ("environment", "运行环境", check_environment),
         ("workspace", "运行目录与会话目录", confirm_directories),
-        ("model", "模型供应商", check_or_setup_models),
+        ("model", "模型供应商与初始配置", check_or_setup_models),
     ]
     for key, label, fn in steps:
         if force or not status[f"{key}_done"]:
@@ -526,7 +642,9 @@ def run_init_steps(force: bool = False):
 
 
 def show_init_config():
-    """查看前三步初始化配置信息，可选择重跑。"""
+    """查看前三步初始化配置信息，可选择重置并重跑。"""
+    from app.state.preferences import preferences_manager
+
     status = collect_init_status()
     print("\n" + "=" * 60)
     print("        初始化配置信息（Step 1-3 初始化设置）")
@@ -538,16 +656,20 @@ def show_init_config():
     print("  【Step 2 目录】")
     print(f"    初始运行目录 (DEFAULT_WORKSPACE)  : {status['workspace'] or '(未配置)'}")
     print(f"    历史会话目录 (CLAUDE_SESSION_DIR) : {status['session_dir'] or '(未配置，自动读取 ~/.claude/projects)'}")
-    print("  【Step 3 模型供应商】")
-    print(f"    当前生效 profile : {status['model_profile'] or '(未配置)'}")
+    print("  【Step 3 模型供应商与初始运行配置】")
+    print(f"    当前生效供应商 (Provider) : {status['pref_provider'] or status['model_profile'] or '(未配置)'}")
+    print(f"    默认模型规格   (Model)    : {status['pref_level'] or '(未配置)'}")
+    print(f"    默认思考力度   (Effort)   : {status['pref_effort'] or '(未配置)'}")
+    print(f"    默认审批模式   (Mode)     : {status['pref_mode'] or '(未配置)'}")
     print()
 
     if status["workspace_done"] and status["environment_done"] and status["model_done"]:
         print("  [OK] 初始化设置已全部完成。")
     else:
         print("  [!] 存在未完成的初始化项。")
-    choice = input("[?] 是否重新运行初始化设置（Step 1-3）？[y/N] (直接回车 = 否): ").strip().lower()
+    choice = input("[?] 是否重置并重新运行初始化设置（Step 1-3）？[y/N] (直接回车 = 否): ").strip().lower()
     if choice == "y":
+        preferences_manager.clear("")
         run_init_steps(force=True)
 
 
@@ -565,10 +687,10 @@ def main_menu():
         print(" 4. 配置企业微信")
         print(" 5. 完整配置（飞书公用 + 企业微信）")
         print("\n【模型供应商】")
-        print(" 6. 模型与供应商管理（切换/添加/修改/测试模型）")
+        print(" 6. 模型供应商与初始运行配置（API Key / Provider / Model / Effort / Mode）")
         print("\n【系统】")
         print(" 7. 配置开机自启（每次开机自动静默后台运行）")
-        print(" 8. 查看初始化配置（工作空间/运行环境/模型供应商）")
+        print(" 8. 查看/重置初始化配置（工作空间/运行环境/模型与初始偏好）")
         print("\n【退出】")
         print(" 0. 退出向导（完成并显示启动说明）")
         print()
@@ -595,6 +717,7 @@ def main_menu():
             setup_wecom_auto()
         elif choice == "6":
             run_cmd([sys.executable, str(ROOT_DIR / "scripts" / "manage_models.py")])
+            configure_initial_preferences()
         elif choice == "7":
             configure_autostart()
         elif choice == "8":

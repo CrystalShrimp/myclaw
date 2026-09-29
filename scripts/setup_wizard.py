@@ -230,7 +230,7 @@ def check_environment():
 
 def configure_initial_preferences():
     """交互式配置初始运行偏好：Provider / Model / Effort / Mode，并写入 config/global_preferences.json。"""
-    from app.profiles import discover_profiles, get_active_profile
+    from app.profiles import discover_profiles, get_active_profile, profile_level_models
     from app.state.preferences import UserPreferences, preferences_manager
 
     current = preferences_manager.get_global()
@@ -261,24 +261,40 @@ def configure_initial_preferences():
     else:
         chosen_provider = active_prof
 
-    # 2. Model (sonnet / opus / haiku)
-    level_options = [
-        ("sonnet", "Sonnet（默认平衡，推荐日常编码）"),
-        ("opus", "Opus（最强推理，适合复杂架构）"),
-        ("haiku", "Haiku（极速轻量，适合简单问答）"),
+    # 2. Model（若当前供应商为已知模型，直接显示具体模型名称而非 sonnet/opus/haiku）
+    models_map = profile_level_models(chosen_provider)
+    raw_levels = [
+        ("sonnet", "标准/推荐"),
+        ("opus", "旗舰/最强"),
+        ("haiku", "轻量/快速"),
     ]
-    default_level = current.level if current.level in ("sonnet", "opus", "haiku") else "sonnet"
-    print(f"\n  [2/4] 选择默认模型规格 (Model) [当前默认: {default_level}]:")
-    for idx, (val, desc) in enumerate(level_options, 1):
-        mark = " (默认)" if val == default_level else ""
-        print(f"    {idx}. {val} - {desc}{mark}")
-    raw_l = input(f"  请选择 [1-3] 或名称 (直接回车 = {default_level}): ").strip().lower()
+    level_options: list[tuple[str, str, str]] = []
+    seen_disp: set[str] = set()
+    for code, desc in raw_levels:
+        actual = models_map.get(code, "")
+        disp = actual or code
+        if disp in seen_disp:
+            continue
+        seen_disp.add(disp)
+        level_options.append((code, disp, desc))
+
+    default_level = current.level if any(c == current.level for c, _, _ in level_options) else level_options[0][0]
+    default_level_disp = next((disp for c, disp, _ in level_options if c == default_level), default_level)
+    print(f"\n  [2/4] 选择默认模型 (Model) [当前默认: {default_level_disp}]:")
+    for idx, (code, disp, desc) in enumerate(level_options, 1):
+        mark = " (默认)" if code == default_level else ""
+        print(f"    {idx}. {disp} - {desc}{mark}")
+    raw_l = input(f"  请选择 [1-{len(level_options)}] 或模型名称 (直接回车 = {default_level_disp}): ").strip().lower()
     chosen_level = default_level
     if raw_l:
         if raw_l.isdigit() and 1 <= int(raw_l) <= len(level_options):
             chosen_level = level_options[int(raw_l) - 1][0]
-        elif raw_l in ("sonnet", "opus", "haiku"):
-            chosen_level = raw_l
+        else:
+            for code, disp, _ in level_options:
+                if raw_l in (code.lower(), disp.lower()):
+                    chosen_level = code
+                    break
+    chosen_level_disp = next((disp for c, disp, _ in level_options if c == chosen_level), chosen_level)
 
     # 3. Effort (low / medium / high / xhigh / max)
     effort_options = [
@@ -329,7 +345,7 @@ def configure_initial_preferences():
     )
     preferences_manager.save_global(prefs)
     print(
-        f"\n[OK] 初始运行配置已保存: Provider={chosen_provider} | Model={chosen_level} "
+        f"\n[OK] 初始运行配置已保存: Provider={chosen_provider} | Model={chosen_level_disp} "
         f"| Effort={chosen_effort} | Mode={chosen_mode}"
     )
 
@@ -645,9 +661,13 @@ def run_init_steps(force: bool = False):
 
 def show_init_config():
     """查看前三步初始化配置信息，可选择重置并重跑。"""
+    from app.profiles import profile_level_models
     from app.state.preferences import preferences_manager
 
     status = collect_init_status()
+    prov = status["pref_provider"] or status["model_profile"] or ""
+    lvl = status["pref_level"] or ""
+    actual_model = profile_level_models(prov).get(lvl, lvl) if (prov and lvl) else lvl
     print("\n" + "=" * 60)
     print("        初始化配置信息（Step 1-3 初始化设置）")
     print("=" * 60)
@@ -659,8 +679,8 @@ def show_init_config():
     print(f"    初始运行目录 (DEFAULT_WORKSPACE)  : {status['workspace'] or '(未配置)'}")
     print(f"    历史会话目录 (CLAUDE_SESSION_DIR) : {status['session_dir'] or '(未配置，自动读取 ~/.claude/projects)'}")
     print("  【Step 3 模型供应商与初始运行配置】")
-    print(f"    当前生效供应商 (Provider) : {status['pref_provider'] or status['model_profile'] or '(未配置)'}")
-    print(f"    默认模型规格   (Model)    : {status['pref_level'] or '(未配置)'}")
+    print(f"    当前生效供应商 (Provider) : {prov or '(未配置)'}")
+    print(f"    默认模型       (Model)    : {actual_model or '(未配置)'}")
     print(f"    默认思考力度   (Effort)   : {status['pref_effort'] or '(未配置)'}")
     print(f"    默认审批模式   (Mode)     : {status['pref_mode'] or '(未配置)'}")
     print()

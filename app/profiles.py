@@ -125,12 +125,21 @@ def load_profile_env(name: str) -> dict[str, str]:
 
 
 def profile_level_models(name: str) -> dict[str, str]:
-    """一个 profile 的 档位 -> 实际模型 id 映射（模型选择卡展示用）。
+    """一个 profile 的 档位 -> 实际模型 id 映射（模型选择卡与 Setup 向导展示用）。
 
-    Returns: {"haiku": "...", "sonnet": "...", "opus": "..."}；profile
-    缺失或未配置某档位时该档位缺省。
+    Returns: {"haiku": "...", "sonnet": "...", "opus": "..."}；
+    优先读取 config/settings_<name>.json，若缺失则回退读取 config/examples/settings_<name>.example.json。
     """
-    env = load_profile_env(name)
+    env = {}
+    example_file = CONFIG_DIR / "examples" / f"settings_{name}.example.json"
+    if example_file.exists():
+        try:
+            ex_data = json.loads(example_file.read_text("utf-8"))
+            ex_env = ex_data.get("env", {})
+            env.update({k: str(v) for k, v in ex_env.items() if isinstance(v, (str, int))})
+        except Exception:
+            pass
+    env.update(load_profile_env(name))
     return {
         level: env[key]
         for level, key in (

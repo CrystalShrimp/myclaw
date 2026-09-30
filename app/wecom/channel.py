@@ -245,18 +245,26 @@ class WeComChannel:
         raise NotImplementedError
 
     async def is_allowed(self, target: UserTarget) -> bool:
-        mode = settings.get_allowed_mode()
-        if mode == "org":
+        allowed_chats = settings.get_wecom_allowed_chats()
+        allowed_users = settings.get_wecom_allowed_users()
+
+        # 1. 公用模式：群白名单与用户白名单均为空 -> 企微全员开放
+        if not allowed_chats and not allowed_users:
             return True
-        if mode in ("groups", "creator"):
-            # 企微暂不支持 groups（群成员查询）/creator（飞书创建人）模式，fail-closed
-            logger.warning("WeCom is_allowed: mode %s unsupported on wecom, denying", mode)
-            return False
-        # 企微专属白名单：WECOM_ALLOWED_USERS 为空 = 企微全员开放；非空 = 仅名单内 userid 可用
-        wecom_allowed = settings.get_allowed_users_for("wecom")
-        if not wecom_allowed:
-            return True
-        return target.user_id in wecom_allowed
+
+        # 2. 特定群模式（方案 A）：配置了 WECOM_ALLOWED_CHATS
+        if allowed_chats:
+            if target.is_group and target.chat_id in allowed_chats:
+                # 授权群内的所有成员直接放行，并自动收录进 WECOM_ALLOWED_USERS 使其单聊也可用
+                if target.user_id and target.user_id not in allowed_users:
+                    if settings.record_wecom_allowed_user(target.user_id):
+                        logger.info("WeCom auto-recorded allowed user %s from group %s", target.user_id, target.chat_id)
+                return True
+            # 单聊或非授权群 -> 仅已收录进 WECOM_ALLOWED_USERS 的成员可用
+            return target.user_id in allowed_users
+
+        # 3. 个人模式 / 指定成员模式：仅 WECOM_ALLOWED_USERS 名单内 userid 可用
+        return target.user_id in allowed_users
 
     # ---- 富视图 ----
 
@@ -271,35 +279,85 @@ class WeComChannel:
                 "expires": time.time() + _PENDING_TTL,
             }
 
+        prefix = f"{payload['prefix_ack']}\n\n" if payload.get("prefix_ack") else ""
+
         if kind == "help":
             await self._respond_or_push(target, self._client.respond_markdown, wc.help_markdown())
         elif kind == "balance":
             await self._respond_or_push(target, self._client.respond_markdown, wc.balance_markdown(payload.get("result")))
-        elif kind == "mode_selection":
-            await self._send_card(target, wc.mode_selection_card(payload.get("approval_id", ""), payload.get("active_mode", "")))
-        elif kind == "effort_selection":
-            await self._send_card(target, wc.effort_selection_card(payload.get("approval_id", ""), payload.get("current_effort", "")))
-        elif kind == "level_selection":
-            await self._send_card(
-                target,
-                wc.level_selection_card(
-                    payload.get("approval_id", ""),
-                    payload.get("current_model", ""),
-                    models_map=payload.get("models_map"),
-                ),
-            )
         elif kind == "provider_selection":
             profiles: dict = payload.get("profiles", {})
-            options = [(name, f"{info.get('label', name)}（{name}）") for name, info in profiles.items()]
-            _numbered("选择模型供应商", options[:20])
+            active_p = payload.get("active_profile", "")
+            title = payload.get("step_title") or "选择模型供应商 (Provider)"
+            options = [
+                (name, f"{info.get('label', name)}（{name}）{' [当前]' if name == active_p else ''}")
+                for name, info in profiles.items()
+            ]
+            _numbered(title, options[:20])
             await self._respond_or_push(
                 target, self._client.respond_markdown,
-                wc.numbered_markdown("选择模型供应商", options[:20], "或直接发送 `/provider <名称>`"),
+                prefix + wc.numbered_markdown(title, options[:20], "或直接发送 `/provider <名称>`"),
+            )
+        elif kind == "level_selection":
+            models_map: dict = payload.get("models_map") or {}
+            current_m = payload.get("current_model", "")
+            title = payload.get("step_title") or "选择模型规格 (Model)"
+            tier_meta = [
+                ("haiku", "⚡", "轻量 / haiku", "轻量快速接口"),
+                ("sonnet", "⚙️", "标准 / sonnet", "标准均衡接口"),
+                ("opus", "🧠", "旗舰 / opus", "深度旗舰接口"),
+            ]
+            options = []
+            for code, icon, builtin_tag, default_tag in tier_meta:
+                mark = " [当前]" if code == current_m else ""
+                if models_map.get(code):
+                    options.append((code, f"{icon} `{models_map[code]}`（{builtin_tag}）{mark}"))
+                else:
+                    options.append((code, f"{icon} `{code}`（{default_tag}）{mark}"))
+            _numbered(title, options)
+            await self._respond_or_push(
+                target, self._client.respond_markdown,
+                prefix + wc.numbered_markdown(title, options, "或直接发送 `/model <haiku|sonnet|opus>`"),
+            )
+        elif kind == "effort_selection":
+            current_e = payload.get("current_effort", "")
+            title = payload.get("step_title") or "选择思考力度 (Effort)"
+            effort_items = [
+                ("low", "⚡ `low` — 轻量 / 快速"),
+                ("medium", "⚙️ `medium` — 标准 / 推荐"),
+                ("high", "🧠 `high` — 深度思考"),
+                ("xhigh", "🔥 `xhigh` — 超高深度"),
+                ("max", "🚀 `max` — 极限推理"),
+            ]
+            options = [
+                (lv, f"{desc}{' [当前]' if lv == current_e else ''}")
+                for lv, desc in effort_items
+            ]
+            _numbered(title, options)
+            await self._respond_or_push(
+                target, self._client.respond_markdown,
+                prefix + wc.numbered_markdown(title, options, "或直接发送 `/effort <low|medium|high|xhigh|max>`"),
+            )
+        elif kind == "mode_selection":
+            active_m = payload.get("active_mode", "")
+            title = payload.get("step_title") or "选择审批模式 (Mode)"
+            mode_items = [
+                ("h", "🛡️ `严格模式 (h)` — 所有工具调用均需审批"),
+                ("m", "⚖️ `平衡模式 (m)` — 仅高风险写/命令操作需审批（推荐）"),
+                ("l", "⚡ `全自动模式 (l)` — 自动放行全部工具调用"),
+            ]
+            options = [
+                (code, f"{desc}{' [当前]' if code == active_m else ''}")
+                for code, desc in mode_items
+            ]
+            _numbered(title, options)
+            await self._respond_or_push(
+                target, self._client.respond_markdown,
+                prefix + wc.numbered_markdown(title, options, "或直接发送 `/mode <h|m|l>`"),
             )
         elif kind == "session_selection":
             sessions: list = payload.get("sessions", [])
             options = []
-            now = time.time()
             for s in sessions[:15]:
                 mtime = s.get("mtime", 0)
                 try:
@@ -359,19 +417,21 @@ class WeComChannel:
                 ),
             )
         elif kind == "reuse_last":
-            card = wc.confirm_card(
-                "沿用上次运行设置？",
-                f"供应商 `{payload.get('profile_label', '-')}` | 规格 `{payload.get('level', '-')}` | 模式 `{payload.get('mode', '-')}`",
-                "ru", "ru",
+            desc = f"供应商 `{payload.get('profile_label', '-')}` | 规格 `{payload.get('level', '-')}` | 模式 `{payload.get('mode', '-')}`"
+            opts = [("yes", "✅ 沿用上次设置"), ("no", "🔄 重新选择配置")]
+            _numbered("沿用上次运行设置？", opts, desc)
+            await self._respond_or_push(
+                target, self._client.respond_markdown,
+                wc.numbered_markdown("沿用上次运行设置？", opts, desc),
             )
-            await self._send_card(target, card)
         elif kind == "ws_config_reuse":
-            card = wc.confirm_card(
-                "该工作区已有完整配置，是否沿用？",
-                f"供应商 `{payload.get('profile_label', '-')}` | 规格 `{payload.get('level', '-')}` | 模式 `{payload.get('mode', '-')}`",
-                "ws", "ws",
+            desc = f"供应商 `{payload.get('profile_label', '-')}` | 规格 `{payload.get('level', '-')}` | 模式 `{payload.get('mode', '-')}`"
+            opts = [("yes", "✅ 沿用该工作区配置"), ("no", "🔄 重新选择配置")]
+            _numbered("该工作区已有完整配置，是否沿用？", opts, desc)
+            await self._respond_or_push(
+                target, self._client.respond_markdown,
+                wc.numbered_markdown("该工作区已有完整配置，是否沿用？", opts, desc),
             )
-            await self._send_card(target, card)
         else:
             raise ValueError(f"Unknown view kind: {kind}")
 

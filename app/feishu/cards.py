@@ -53,18 +53,18 @@ def build_model_selection_card(
     models_map: 当前供应商 profile 的 {haiku/sonnet/opus: 实际模型 id}，
     传入时按钮与摘要显示实际模型。
     """
-    active = current_model or default_model or "sonnet"
-    model_desc = {"haiku": "Haiku (轻量/快速)", "sonnet": "Sonnet (标准/推荐)", "opus": "Opus (旗舰/最强)"}
+    active = current_model if current_model in ("haiku", "sonnet", "opus") else (default_model if current_model else "")
+    model_desc = {"haiku": "haiku (轻量/快速)", "sonnet": "sonnet (标准/推荐)", "opus": "opus (旗舰/最强)"}
     all_models = [("haiku", "secondary"), ("sonnet", "primary"), ("opus", "danger")]
 
     def _label(code: str) -> str:
-        # 有真实模型 id 时只显示 id（如 glm-5-turbo），缺配置回落到档位描述
+        # 有项目内置具体模型时显示具体模型名，无内置则使用默认的 haiku / sonnet / opus 接口
         actual = (models_map or {}).get(code, "")
         return actual or model_desc[code]
 
     actions = []
     for model_code, btn_type in all_models:
-        is_active = (model_code == active)
+        is_active = bool(active and model_code == active)
         actions.append({
             "tag": "button",
             "text": {
@@ -80,14 +80,14 @@ def build_model_selection_card(
             },
         })
 
-    display_prompt = f"**当前已选：** `{_label(active)}`\n"
+    display_prompt = f"**当前已选：** `{_label(active)}`\n" if active else "**当前已选：** `未设置（请点选下方按钮）`\n"
     if prompt:
-        display_prompt += f"**暂存指令：** {prompt[:200]}"
+        display_prompt += f"**说明：** {prompt[:200]}"
 
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": "选择模型规格 (Model Level)"},
+            "title": {"tag": "plain_text", "content": "选择模型规格 (Model)"},
             "template": "blue",
         },
         "elements": [

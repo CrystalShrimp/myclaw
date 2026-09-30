@@ -73,12 +73,23 @@ class ApprovalManager:
         Returns:
             True if approved, False if rejected/expired.
         """
-        approval_id = uuid.uuid4().hex[:12]
-
         # Create a synthetic command for audit tracking
+        command_str = f"Tool: {tool_name}({', '.join(f'{k}={v!r}' for k, v in list(tool_arguments.items())[:5])})"
+        for existing_id, existing_req in list(self._pending.items()):
+            if (
+                existing_req.status == ApprovalStatus.PENDING
+                and existing_req.command.command == command_str
+                and self._approval_targets.get(existing_id) == target
+            ):
+                existing_fut = self._callbacks.get(existing_id)
+                if existing_fut and not existing_fut.done():
+                    logger.info("Reusing in-flight tool approval %s for %s", existing_id, command_str)
+                    return await existing_fut
+
+        approval_id = uuid.uuid4().hex[:12]
         command = ParsedCommand(
             raw_text=f"tool:{tool_name}",
-            command=f"Tool: {tool_name}({', '.join(f'{k}={v!r}' for k, v in list(tool_arguments.items())[:5])})",
+            command=command_str,
             risk_level=risk_level,
         )
 

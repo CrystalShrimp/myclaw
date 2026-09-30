@@ -1,5 +1,5 @@
 {
-    "botName": "myclaw 助手",
+    "botName": "myclaw",
     "botDescription": "用于接入 myclaw 的企业微信智能机器人",
     "envPath": "../.env",
     "resultPath": "./wecom-bot-result.json",

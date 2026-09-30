@@ -24,6 +24,8 @@ interface LoadedConfig extends Required<Omit<RawConfig, "botDescription">> {
 interface ResultState {
   botName: string | null;
   botId: string | null;
+  creatorUserId: string | null;
+  deployMode: "personal" | "public";
   maskedSecret: string | null;
   reused: boolean;
   createdAt: string;
@@ -44,6 +46,12 @@ interface Logger {
 }
 
 const DEBUG_ENABLED = process.argv.includes("--debug");
+const DEPLOY_MODE: "personal" | "public" = (() => {
+  if (process.argv.includes("--public") || (process.env.WECOM_DEPLOY_MODE || "").trim().toLowerCase() === "public") {
+    return "public";
+  }
+  return "personal";
+})();
 // CDP 附加模式（联调用）：WECOM_CDP_URL=http://127.0.0.1:9333 npm run wecom:setup
 const CDP_URL = (() => {
   const i = process.argv.indexOf("--cdp");
@@ -116,14 +124,15 @@ async function loadConfig(rootDir: string): Promise<LoadedConfig> {
 
 async function createInitialResult(config: LoadedConfig): Promise<ResultState> {
   const initial: ResultState = {
-    botName: null, botId: null, maskedSecret: null, reused: false,
+    botName: null, botId: null, creatorUserId: null, deployMode: DEPLOY_MODE,
+    maskedSecret: null, reused: false,
     createdAt: nowIso(), updatedAt: nowIso(),
     status: "pending", lastCompletedStep: null,
     warnings: [], nextSteps: [], artifacts: [], failure: null,
   };
   try {
     const previous = JSON.parse(await readFile(config.resultPath, "utf8")) as Partial<ResultState>;
-    return { ...initial, ...previous, updatedAt: nowIso(), status: "pending", failure: null };
+    return { ...initial, ...previous, deployMode: DEPLOY_MODE, updatedAt: nowIso(), status: "pending", failure: null };
   } catch {
     return initial;
   }
@@ -424,6 +433,9 @@ async function createNewBot(page: Page, config: LoadedConfig, prompt: readline.I
     logger.info("Secret 已生成（保存拦截解除）。");
   }
 
+  // 4.5 按部署模式设置「使用方式」（仅个人使用 vs 多人使用）
+  await applyUseModeInForm(page, config, DEPLOY_MODE);
+
   // 5. 保存：挂接口采集器（真因只存在于 POST 响应里）+ 第一现场抓取
   const xhrLog: string[] = [];
   const onResponse = async (resp: Response): Promise<void> => {
@@ -524,6 +536,122 @@ async function createNewBot(page: Page, config: LoadedConfig, prompt: readline.I
   }
 }
 
+/**
+ * 在创建页或编辑页中，将「使用方式」下拉框切换为目标模式：
+ * - personal -> 「仅个人使用」
+ * - public   -> 「多人使用」，并自动点击「添加」勾选全企业根部门可见范围
+ */
+async function applyUseModeInForm(page: Page, config: LoadedConfig, mode: "personal" | "public"): Promise<void> {
+  const targetOptionText = mode === "public" ? "多人使用" : "仅个人使用";
+  try {
+    const selectWrap = page.locator(".use-mode__select, .wd-dropdown.use-mode__select").first();
+    if (!(await selectWrap.isVisible({ timeout: 3000 }).catch(() => false))) {
+      logger.debug(`页面未找到 .use-mode__select 下拉框，跳过使用方式切换（目标：${targetOptionText}）。`);
+      return;
+    }
+    await selectWrap.scrollIntoViewIfNeeded().catch(() => undefined);
+    await selectWrap.click({ timeout: 5000 }).catch(() => undefined);
+    await page.waitForTimeout(600);
+
+    const opt = page.locator(`li.t-select-option[title='${targetOptionText}'], li.t-select-option:has-text('${targetOptionText}')`).first();
+    if (await opt.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await opt.click({ timeout: 5000 }).catch(() => undefined);
+      await page.waitForTimeout(800);
+      logger.info(`已将机器人「使用方式」设置为：${targetOptionText}`);
+    } else {
+      logger.warn(`下拉列表中未找到「${targetOptionText}」选项，保持当前默认状态。`);
+    }
+
+    // 若为公用模式（多人使用），确保可见范围已添加（若未添加，点击「添加」勾选顶层企业节点）
+    if (mode === "public") {
+      const addScopeBtn = page.locator(".use-mode button:has-text('添加'), .visible_selector button:has-text('添加')").first();
+      if (await addScopeBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+        // 检查是否已有已选标签
+        const hasTags = await page.locator(".use-mode .range_tag_list > *, .visible_selector .range_tag_list > *").count().catch(() => 0);
+        if (hasTags === 0) {
+          logger.info("公用模式：正在点击可见范围「添加」选择全企业范围...");
+          await addScopeBtn.click({ timeout: 5000 }).catch(() => undefined);
+          await page.waitForTimeout(1200);
+
+          const dlg = page.locator(".t-dialog:visible, [role='dialog']:visible, .ww_dialog:visible").first();
+          if (await dlg.isVisible({ timeout: 3000 }).catch(() => false)) {
+            // 尝试点击弹窗左侧树中的第一个顶层部门节点或复选框
+            const rootSelectors = [
+              ".jstree-anchor",
+              ".ww_treeSelector_item",
+              ".t-tree__item .t-checkbox",
+              ".t-tree__item",
+              "input[type='checkbox']",
+            ];
+            for (const sel of rootSelectors) {
+              const firstNode = dlg.locator(sel).first();
+              if (await firstNode.isVisible({ timeout: 800 }).catch(() => false)) {
+                await firstNode.click({ timeout: 3000 }).catch(() => undefined);
+                await page.waitForTimeout(500);
+                break;
+              }
+            }
+            // 点击弹窗内的「确定」
+            const confirmBtn = dlg.locator("button:has-text('确定'), a:has-text('确定')").first();
+            if (await confirmBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+              await confirmBtn.click({ timeout: 5000 }).catch(() => undefined);
+              await page.waitForTimeout(800);
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    logger.warn(`设置使用方式（${targetOptionText}）时遇到非致命异常：${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
+ * 复用已有机器人时，在详情页检查「可使用方式」是否与目标模式一致；
+ * 若不一致（例如个人用模式变成公用模式，或反之），自动点击右上角「编辑」进行切换并保存。
+ */
+async function ensureBotUseModeOnDetail(page: Page, config: LoadedConfig, mode: "personal" | "public", currentName: string): Promise<void> {
+  try {
+    const bodyText = await page.locator("body").innerText({ timeout: 5000 });
+    const isCurrentlyPersonal = bodyText.includes("仅个人使用");
+    const modeMatched = (mode === "personal" && isCurrentlyPersonal) || (mode === "public" && !isCurrentlyPersonal);
+    const nameMatched = currentName.trim() === config.botName.trim();
+    if (modeMatched && nameMatched) {
+      logger.info(`当前机器人名称（${config.botName}）与使用方式（${mode === "personal" ? "仅个人使用" : "多人/公用"}）均已符合目标。`);
+      return;
+    }
+
+    const editBtn = page.locator("button:has-text('编辑')").first();
+    if (!(await editBtn.isVisible({ timeout: 3000 }).catch(() => false))) {
+      logger.warn("详情页未找到「编辑」按钮，跳过名称/使用方式更新。");
+      return;
+    }
+
+    logger.info(`正在进入编辑页同步机器人名称（-> ${config.botName}）与使用方式（-> ${mode === "personal" ? "仅个人使用" : "多人使用"}）...`);
+    await editBtn.click({ timeout: 5000 });
+    await page.waitForTimeout(2500);
+
+    if (!nameMatched) {
+      const nameInput = page.locator("input[placeholder*='名称'], input[placeholder*='机器人名']").first();
+      if (await nameInput.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await nameInput.fill(config.botName, { timeout: config.timeoutMs }).catch(() => undefined);
+        logger.info(`已将机器人名称从「${currentName}」改为「${config.botName}」`);
+      }
+    }
+
+    await applyUseModeInForm(page, config, mode);
+
+    const saveBtn = page.locator("button.navi_button:has-text('保存'), button.t-button--theme-primary:has-text('保存'), button:has-text('保存')").first();
+    if (await saveBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await saveBtn.click({ timeout: 5000 }).catch(() => undefined);
+      await page.waitForTimeout(4000);
+      logger.info("已保存机器人编辑变更。");
+    }
+  } catch (e) {
+    logger.warn(`详情页核对/切换使用方式异常：${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 async function main(): Promise<void> {
   const rootDir = process.cwd();
   const config = await loadConfig(rootDir);
@@ -558,6 +686,29 @@ async function main(): Promise<void> {
   }
   page.setDefaultTimeout(config.timeoutMs);
 
+  // 监听 getAIRobotDetail 接口，自动捕获创建者本人的企业微信 userid (acctid)
+  page.on("response", async (resp: Response) => {
+    try {
+      if (!resp.url().includes("getAIRobotDetail")) return;
+      const data = await resp.json().catch(() => null);
+      const vids = data?.data?.aibot_profile?.robot_config?.visiable_range?.visible_vids;
+      if (Array.isArray(vids)) {
+        for (const item of vids) {
+          if (item && typeof item === "object" && typeof item.acctid === "string" && item.acctid.trim()) {
+            const acctid = item.acctid.trim();
+            if (result.creatorUserId !== acctid) {
+              result.creatorUserId = acctid;
+              logger.info(`已从后台接口自动捕获创建者 userid：${acctid}`);
+            }
+            break;
+          }
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  });
+
   const fail = async (step: string, message: string): Promise<never> => {
     const artifacts = await saveArtifacts(page, config, step);
     result.failure = { step, message, recoverable: false };
@@ -571,7 +722,7 @@ async function main(): Promise<void> {
 
   try {
     // Step 1: 登录
-    logger.info("正在确认管理后台登录状态...");
+    logger.info(`正在确认管理后台登录状态（目标模式：${DEPLOY_MODE === "personal" ? "个人用" : "公用"}）...`);
     try {
       await waitForLogin(page, config);
       result.lastCompletedStep = "登录管理后台";
@@ -639,10 +790,13 @@ async function main(): Promise<void> {
       throw new Error("未能确定目标机器人。");
     }
 
-    // Step 4: 详情页读取凭据
+    // Step 4: 详情页读取凭据并核对使用方式
     logger.info(`正在打开机器人「${chosen}」详情页...`);
     try {
       await openBotDetail(page, config, chosen);
+      if (result.reused) {
+        await ensureBotUseModeOnDetail(page, config, DEPLOY_MODE, chosen);
+      }
       const cred = await extractCredentials(page);
       if (!cred.longConnection) {
         result.warnings.push(`「${chosen}」详情页未检测到“长连接”字样，请人工确认配置方式为长连接（SDK）。`);
@@ -654,6 +808,9 @@ async function main(): Promise<void> {
       await writeWecomEnv(config.envPath, cred.botId, cred.secret);
       logger.info(`Bot ID：${cred.botId}`);
       logger.info(`Secret：${result.maskedSecret}（已明文写入 ${config.envPath}）`);
+      if (result.creatorUserId) {
+        logger.info(`创建者 userid：${result.creatorUserId}`);
+      }
       result.lastCompletedStep = "读取凭据并写入 .env";
     } catch (e) {
       await fail("读取凭据", e instanceof Error ? e.message : String(e));

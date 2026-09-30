@@ -39,9 +39,13 @@ class Settings(BaseSettings):
     allowed_users: str = ""
     # 企业微信访问白名单（留空 = 全员放行，非空 = 仅名单内 userid 可用，无须 wecom: 前缀）
     wecom_allowed_users: str = ""
+    # 企业微信特定群白名单（方案 A：授权群 chatid 列表，群内成员直接可用并自动收录单聊权限）
+    wecom_allowed_chats: str = ""
     allowed_mode: str = ""
     allowed_creator: str = ""
     allowed_group_ids: str = ""
+    # 个人用白名单自动绑定标记（向导解析创建者失败置 1；服务后台轮询成功后自动清除）
+    feishu_allowlist_pending: str = ""
 
     # Audit
     audit_log_path: str = "./logs/audit.log"
@@ -108,6 +112,42 @@ class Settings(BaseSettings):
                 if uid and uid not in compat:
                     compat.append(uid)
         return compat
+
+    def get_wecom_allowed_chats(self) -> list[str]:
+        """获取企业微信授权群聊 chatid 列表（方案 A 特定群白名单）。"""
+        return [c.strip() for c in self.wecom_allowed_chats.split(",") if c.strip()]
+
+    def record_wecom_allowed_user(self, user_id: str) -> bool:
+        """将授权群内发言的企微成员自动收录进 WECOM_ALLOWED_USERS（内存 + .env 持久化）。"""
+        uid = user_id.strip()
+        if not uid:
+            return False
+        current = self.get_wecom_allowed_users()
+        if uid in current:
+            return False
+        current.append(uid)
+        new_val = ",".join(current)
+        self.wecom_allowed_users = new_val
+        try:
+            env_file = Path(__file__).resolve().parent.parent / ".env"
+            lines = env_file.read_text(encoding="utf-8", errors="replace").splitlines() if env_file.exists() else []
+            found = False
+            new_lines = []
+            for line in lines:
+                stripped = line.strip()
+                if not stripped.startswith("#") and "=" in stripped:
+                    k, _ = stripped.split("=", 1)
+                    if k.strip() == "WECOM_ALLOWED_USERS":
+                        new_lines.append(f"WECOM_ALLOWED_USERS={new_val}")
+                        found = True
+                        continue
+                new_lines.append(line)
+            if not found:
+                new_lines.append(f"WECOM_ALLOWED_USERS={new_val}")
+            env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+        return True
 
     def get_allowed_users_for(self, platform: str) -> list[str]:
         """按平台获取对应的独立白名单列表。"""

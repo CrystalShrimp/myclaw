@@ -132,6 +132,13 @@ const MODE_ARG = (() => {
   if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1].trim().toLowerCase();
   return "";
 })();
+const FORCE_CREATE_APP = process.argv.includes("--create");
+const APP_NAME_ARG = (() => {
+  const i = process.argv.indexOf("--app-name");
+  if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1];
+  const pref = process.argv.find((a) => a.startsWith("--app-name=")) || "";
+  return pref.slice("--app-name=".length);
+})();
 const PERSONAL_MODE =
   process.argv.includes("--personal") ||
   MODE_ARG === "personal" ||
@@ -314,6 +321,9 @@ async function createInitialResult(config: LoadedConfig): Promise<ResultState> {
     return {
       ...initial,
       ...safePrevious,
+      // open_id 是应用隔离的：上次运行解析的创建者未必属于本次应用
+      //（复用/换选应用时必错），一律清空，PERSONAL_MODE 收尾按本次应用重解析
+      creatorOpenId: null,
       updatedAt: nowIso(),
       status: "pending",
       failure: null,
@@ -720,26 +730,39 @@ function getPageFromRoot(root: Page | Locator): Page {
 }
 
 function writeSystemClipboardText(text: string): boolean {
-  try {
-    if (process.platform === "win32") {
-      execFileSync("powershell.exe", ["-NoProfile", "-Command", "$input | Set-Clipboard"], {
-        input: text,
-        encoding: "utf8",
-        stdio: ["pipe", "ignore", "ignore"]
-      });
-      return true;
-    } else if (process.platform === "darwin") {
-      execFileSync("pbcopy", [], {
-        input: text,
-        encoding: "utf8",
-        stdio: ["pipe", "ignore", "ignore"]
-      });
-      return true;
+  // Set-Clipboard 在剪贴板被并发占用时会抛 COM 异常但往往已写入——重试即可
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      if (process.platform === "win32") {
+        execFileSync("powershell.exe", ["-NoProfile", "-Command", "$input | Set-Clipboard"], {
+          input: text,
+          encoding: "utf8",
+          stdio: ["pipe", "ignore", "ignore"]
+        });
+        return true;
+      } else if (process.platform === "darwin") {
+        execFileSync("pbcopy", [], {
+          input: text,
+          encoding: "utf8",
+          stdio: ["pipe", "ignore", "ignore"]
+        });
+        return true;
+      }
+    } catch {
+      // fallthrough 重试
     }
-  } catch {
-    return false;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400);
   }
-
+  // win32 最终兜底：clip.exe + UTF-16 BOM（中文安全）
+  if (process.platform === "win32") {
+    try {
+      const bomText = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, "utf16le")]);
+      execFileSync("cmd", ["/c", "clip"], { input: bomText, stdio: ["pipe", "ignore", "ignore"] });
+      return true;
+    } catch {
+      return false;
+    }
+  }
   return false;
 }
 
@@ -1671,7 +1694,9 @@ async function createOrOpenApp(ctx: StepContext): Promise<void> {
   }
 
   let chosenApp: StartedAppCandidate | null = null;
-  if (candidates.length > 0) {
+  if (FORCE_CREATE_APP) {
+    ctx.logger.info("--create 参数：跳过已有应用复用，直接创建新应用。");
+  } else if (candidates.length > 0) {
     chosenApp = await chooseSelfBuiltApp(ctx, candidates);
   } else {
     ctx.logger.info("当前企业账号下未检测到自建应用，将进入创建新应用流程。");
@@ -1723,7 +1748,13 @@ async function createOrOpenApp(ctx: StepContext): Promise<void> {
 
   // 用户选择 0 创建新应用，或账号下无已有应用
   ctx.logger.info("即将进入创建全新企业自建应用流程...");
-  if (!isNonInteractivePrompt()) {
+  if (isNonInteractivePrompt()) {
+    if (APP_NAME_ARG) {
+      ctx.config.appName = APP_NAME_ARG;
+      ctx.config.botName = APP_NAME_ARG;
+      ctx.logger.info(`非交互模式：应用名称采用 --app-name 参数："${ctx.config.appName}"`);
+    }
+  } else {
     const customName = (await promptText(
       ctx.prompt,
       `请输入新应用的名称 (直接回车默认 "${ctx.config.appName}"): `
@@ -1853,6 +1884,23 @@ async function fillAppBasicInfo(ctx: StepContext): Promise<void> {
   }
 }
 
+async function upsertEnvEntries(envPath: string, entries: Record<string, string>): Promise<void> {
+  let content = "";
+  try {
+    content = await readFile(envPath, "utf8");
+  } catch {
+    content = "";
+  }
+  for (const [key, value] of Object.entries(entries)) {
+    const line = key + "=" + value;
+    const pattern = new RegExp("^" + escapeRegExp(key) + "=.*$", "m");
+    content = pattern.test(content)
+      ? content.replace(pattern, line)
+      : content.replace(/\s*$/, "") + (content ? "\n" : "") + line + "\n";
+  }
+  await writeFile(envPath, content, "utf8");
+}
+
 async function writeFeishuCredentials(envPath: string, appId: string, appSecret: string): Promise<void> {
   let content = "";
   try {
@@ -1860,6 +1908,28 @@ async function writeFeishuCredentials(envPath: string, appId: string, appSecret:
   } catch {
     content = "";
   }
+
+  // 换用不同应用覆写 .env 前，先整份备份旧凭据（旧 App Secret 覆写后不可找回）
+  const prevAppId = content.match(/^FEISHU_APP_ID=(.*)$/m)?.[1]?.trim() ?? "";
+  if (content && prevAppId && prevAppId !== appId) {
+    await writeFile(envPath + ".feishu-bak", content, "utf8").catch(() => undefined);
+  }
+
+  const upsertAllowlistReset = (source: string): string => {
+    // 个人用：open_id 随应用隔离，换应用旧白名单必然失效——切应用瞬间清空并
+    // 布防自动绑定（服务端首条私聊绑定创建者），任何中途失败/重跑都能收敛
+    if (!PERSONAL_MODE || !prevAppId || prevAppId === appId) return source;
+    let out = source;
+    const pendingPattern = /^FEISHU_ALLOWLIST_PENDING=.*$/m;
+    out = pendingPattern.test(out)
+      ? out.replace(pendingPattern, "FEISHU_ALLOWLIST_PENDING=1")
+      : out.replace(/\s*$/, "") + (out ? "\n" : "") + "FEISHU_ALLOWLIST_PENDING=1\n";
+    const allowPattern = /^ALLOWED_USERS=.*$/m;
+    return allowPattern.test(out)
+      ? out.replace(allowPattern, "ALLOWED_USERS=")
+      : out.replace(/\s*$/, "") + (out ? "\n" : "") + "ALLOWED_USERS=\n";
+  };
+  content = upsertAllowlistReset(content);
 
   const upsert = (source: string, key: string, value: string): string => {
     const line = key + "=" + value;
@@ -3338,19 +3408,37 @@ async function mainV2(): Promise<void> {
     // 跳过决策基于线上活体校验，不信任 result.json 的历史标志：
     // 后台手动改动（权限关闭/事件退订）不会使缓存标志失效。
     let needForcePublish = false;
-    const permLive = await verifyPermissionsLive(ctx);
-    if (!permLive.ok) {
-      logger.info(`线上校验：飞书权限异常（${permLive.detail || "未通过"}），执行导入...`);
-      await executeStep(ctx, "导入飞书权限", async () => {
-        await importPermissionsV2(ctx);
-        needForcePublish = true;
-      });
+    let permLive = await verifyPermissionsLive(ctx);
+    if (permLive.ok && !permLive.needPublish) {
+      logger.info("线上校验：飞书发消息及自管理核心权限已开通且在 OpenAPI 生效，跳过导入。");
     } else {
-      if (permLive.needPublish) {
+      if (permLive.ok && permLive.needPublish) {
         logger.info(`线上校验：${permLive.detail || "权限已配置但需发版生效"}，跳过导入并标记强制发版。`);
         needForcePublish = true;
       } else {
-        logger.info("线上校验：飞书发消息及自管理核心权限已开通且在 OpenAPI 生效，跳过导入。");
+        // 导入 → 控制台逐项复核 循环（最多 3 次）。导入弹窗的成功提示可能漏检
+        // （实测多次"半失败"：提示未出现但流程继续，发版后 OpenAPI 永久 99991672），
+        // 控制台权限列表才是唯一事实；复核不过绝不进入发版。
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          logger.info(`线上校验：飞书权限异常（${permLive.detail || "未通过"}），执行导入（第 ${attempt}/3 次）...`);
+          await executeStep(ctx, "导入飞书权限", async () => {
+            await importPermissionsV2(ctx);
+          });
+          permLive = await verifyPermissionsLive(ctx);
+          if (permLive.ok) {
+            logger.info(`导入后复核通过：控制台权限已齐备（第 ${attempt} 次导入）。`);
+            break;
+          }
+          logger.warn(`导入后复核仍未通过：${permLive.detail || "未通过"}`);
+        }
+        if (!permLive.ok) {
+          await saveArtifacts(ctx.page, ctx.config, "权限导入复核失败");
+          throw new Error(
+            `权限导入 3 次后控制台复核仍未通过：${permLive.detail || "未通过"}。` +
+              "已中止且未发版（避免发布缺失权限的版本）；排错截图见 artifacts。"
+          );
+        }
+        needForcePublish = true;
       }
     }
 
@@ -3387,15 +3475,13 @@ async function mainV2(): Promise<void> {
         await executeStep(ctx, "创建并发布飞书应用版本", async () => {
           await publishApp(ctx);
         });
-        // 发版后等待 OpenAPI 鉴权中心同步新版本权限（消除 99991672 传播延迟）
-        for (let i = 0; i < 6; i += 1) {
-          const probe = await probeSelfManageScopeOpenApi(ctx.result.appId, ctx.runtimeAppSecret);
-          if (probe.ok) {
-            logger.info("OpenAPI 权限生效确认通过（application:application:self_manage 已就绪）。");
-            break;
-          }
-          logger.info(`等待飞书新版本权限在 OpenAPI 鉴权中心生效 (${i + 1}/6)...`);
-          await ctx.page.waitForTimeout(2500);
+        // 发版后 OpenAPI 生效确认仅作记录：实测传播普遍超出会话窗口（多次 6/6 全超时），
+        // 不再原地等待；个人用创建者由服务端自动绑定闭环兜底（首条私聊即绑定）。
+        const probeOnce = await probeSelfManageScopeOpenApi(ctx.result.appId, ctx.runtimeAppSecret);
+        if (probeOnce.ok) {
+          logger.info("OpenAPI 权限生效确认通过（application:application:self_manage 已就绪）。");
+        } else {
+          logger.info("OpenAPI 权限仍在传播（不影响交付；个人用白名单将由服务自动绑定）。");
         }
       } else {
         ctx.result.published = true;
@@ -3412,27 +3498,23 @@ async function mainV2(): Promise<void> {
       logger.info("提示：应用未提交发布，已跳过根目录 .env 的凭据写入，保持原有配置不被覆盖。");
     }
 
-    // 个人用收尾数据：会话内解析应用创建者 open_id。权限刚发版后对 OpenAPI 生效
-    // 可能有几十秒延迟，这里带重试拿稳并写入结果文件，向导收尾直接读（避免
-    // 浏览器关闭后再查、恰好撞上权限传播窗口而失败）。
-    if (PERSONAL_MODE && ctx.result.appId && ctx.runtimeAppSecret) {
-      for (let attempt = 1; attempt <= 6 && !ctx.result.creatorOpenId; attempt++) {
-        const probe = await probeSelfManageScopeOpenApi(ctx.result.appId, ctx.runtimeAppSecret);
-        if (probe.creatorId) {
-          ctx.result.creatorOpenId = probe.creatorId;
-          logger.info(`已解析应用创建者 open_id：${probe.creatorId}（个人用白名单数据已备好）`);
-          break;
-        }
-        if (probe.ok) {
-          break;
-        }
-        if (attempt < 6) {
-          logger.info(`等待 self_manage 权限对 OpenAPI 生效（${attempt}/6）...`);
-          await new Promise((resolve) => setTimeout(resolve, 10000));
-        }
-      }
-      if (!ctx.result.creatorOpenId) {
-        ctx.result.warnings.push("未能解析创建者 open_id（self_manage 权限生效延迟）；向导收尾会再尝试直连查询。");
+    // 个人用收尾：单次尝试解析创建者并【由本进程直接写白名单】——不再依赖
+    // 向导控制台存活（实测 npm 结束后窗口被关，向导侧写入步骤不会执行）。
+    if (PERSONAL_MODE && ctx.result.appId && ctx.runtimeAppSecret && !ctx.result.creatorOpenId) {
+      const probe = await probeSelfManageScopeOpenApi(ctx.result.appId, ctx.runtimeAppSecret);
+      if (probe.creatorId) {
+        ctx.result.creatorOpenId = probe.creatorId;
+        logger.info(`已解析应用创建者 open_id：${probe.creatorId}（个人用白名单数据已备好）`);
+        await upsertEnvEntries(config.envPath, {
+          ALLOWED_USERS: probe.creatorId,
+          FEISHU_ALLOWLIST_PENDING: "",
+        });
+        logger.info("已将创建者直接写入 .env 的 ALLOWED_USERS（个人用白名单闭环）。");
+      } else {
+        // 传播未到：布防自动绑定，服务端首个私聊即完成（可用范围=仅创建者，恒等）
+        await upsertEnvEntries(config.envPath, { FEISHU_ALLOWLIST_PENDING: "1" });
+        ctx.result.warnings.push("创建者 open_id 留待服务自动绑定（首条私聊即完成）。");
+        logger.info("已布防 FEISHU_ALLOWLIST_PENDING=1（服务端首条私聊自动绑定）。");
       }
       await persistResult(config, ctx.result);
     }

@@ -451,7 +451,7 @@ def fetch_app_creator_open_id(app_id: str, app_secret: str) -> str:
                 raise
 
     last_info: dict = {}
-    for attempt in range(5):
+    for attempt in range(2):
         tok = call(
             "POST",
             "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
@@ -466,9 +466,9 @@ def fetch_app_creator_open_id(app_id: str, app_secret: str) -> str:
         last_info = info
         if info.get("code") == 0:
             return (info.get("data", {}).get("app", {}) or {}).get("creator_id", "")
-        if info.get("code") == 99991672 and attempt < 4:
-            print(f"[*] 等待飞书应用权限(application:application:self_manage)同步生效 ({attempt + 1}/5)...")
-            time.sleep(3)
+        if info.get("code") == 99991672 and attempt < 1:
+            print(f"[*] 等待飞书应用权限(application:application:self_manage)同步生效 ({attempt + 1}/2)...")
+            time.sleep(2)
             continue
         break
 
@@ -498,17 +498,52 @@ def apply_personal_allowlist():
         try:
             creator = fetch_app_creator_open_id(app_id, app_secret)
         except Exception as e:
-            print(f"[!] 查询应用创建者失败（{e}），未改动 ALLOWED_USERS。")
-            print("    可打开报错中的链接开通任一所需权限，或稍后重跑「个人用」配置自动补齐。")
+            from scripts.import_feishu_group import upsert_env as _upsert
+            _upsert("FEISHU_ALLOWLIST_PENDING", "1")
+            print(f"[!] 创建者解析暂未成功（{e}）。")
+            print("[OK] 已进入自动绑定模式：重启服务后系统会自动等待飞书权限生效，")
+            print("     自动解析创建者并写入 ALLOWED_USERS，完成后机器人会主动通知，无需人工操作。")
             return
     if not creator:
-        print("[!] 未获取到应用创建者 open_id，未改动 ALLOWED_USERS。")
+        from scripts.import_feishu_group import upsert_env as _upsert
+        _upsert("FEISHU_ALLOWLIST_PENDING", "1")
+        print("[!] 未获取到应用创建者 open_id，已进入自动绑定模式（重启服务后自动补齐并主动通知）。")
         return
 
     from scripts.import_feishu_group import upsert_env
     upsert_env("ALLOWED_USERS", creator)
+    upsert_env("FEISHU_ALLOWLIST_PENDING", "")
     print(f"[OK] 个人用模式：ALLOWED_USERS 已写入应用创建者 {creator}（名单里明确仅本人可用）。")
     print("     若服务正在运行，请重启服务使配置生效。")
+
+
+def offer_restart(reason: str):
+    """凭据/白名单变更收尾：询问是否立即重启服务使 .env 生效。"""
+    print(f"\n[*] {reason}，重启服务后生效。")
+    try:
+        ans = input("[?] 是否立即重启服务？[Y/N] (默认 Y): ").strip().lower()
+    except EOFError:
+        ans = "n"
+    if ans not in ("", "y", "yes"):
+        print("[OK] 已跳过重启；稍后可运行 launcher 目录里的 Restart 脚本。")
+        return
+    if sys.platform == "win32":
+        bats = sorted((ROOT_DIR / "launcher_windows").glob("*-Restart.bat"))
+        if bats:
+            # 新窗口执行：Restart.bat 为 GBK 输出且自带 pause，在向导的 UTF-8
+            # 控制台里会乱码并卡住向导；独立窗口代码页正确且不打断向导流程
+            subprocess.Popen(
+                ["cmd.exe", "/c", "start", "Restart Service", str(bats[0])],
+                cwd=str(ROOT_DIR),
+            )
+            print(f"[OK] 已在新窗口执行重启（{bats[0].name}），进度在该窗口显示，完成后按任意键关闭即可。")
+            return
+    else:
+        sh = ROOT_DIR / "scripts" / "restart_mac.sh"
+        if sh.exists():
+            run_cmd(["bash", str(sh)], cwd=ROOT_DIR)
+            return
+    print("[!] 未找到重启脚本，请手动重启服务。")
 
 
 def setup_feishu(mode: str):
@@ -543,16 +578,74 @@ def setup_feishu(mode: str):
         print(f"[OK] 飞书{mode_label}模式自动化配置完成。")
         if mode == "personal":
             apply_personal_allowlist()
+            print("[*] 新建/换用应用后，飞书发送权限对 OpenAPI 生效可能延迟几分钟到几十分钟；")
+            print("    期间发消息可能暂时无回复，就绪后会自动送达，无需任何操作。")
+        else:
+            # 公用=全员可用：清掉可能残留的个人用白名单，避免拦掉其他用户
+            from scripts.import_feishu_group import upsert_env as _upsert
+            if get_env_value("ALLOWED_USERS"):
+                _upsert("ALLOWED_USERS", "")
+                _upsert("FEISHU_ALLOWLIST_PENDING", "")
+                print("[OK] 公用模式：已清空残留的个人用白名单（全员可用）。")
+        offer_restart("飞书配置已写入 .env")
     else:
         print(f"[!] 飞书自动化配置退出，返回码: {code}")
 
 
-def setup_wecom_auto():
-    """企业微信自动化配置：auto_wecom 浏览器自动化（扫码登录→复用/创建机器人→读凭据）+ WS 长连接实测。"""
+def apply_wecom_personal_allowlist():
+    """企微个人用模式收尾：把从后台 getAIRobotDetail 提取的创建者 userid 写入 WECOM_ALLOWED_USERS。"""
+    creator = ""
+    try:
+        result_file = ROOT_DIR / "auto_wecom" / "wecom-bot-result.json"
+        if result_file.exists():
+            data = json.loads(result_file.read_text(encoding="utf-8"))
+            creator = (data.get("creatorUserId") or "").strip()
+    except Exception:
+        creator = ""
+
+    if creator:
+        upsert_env_key("WECOM_ALLOWED_USERS", creator)
+        upsert_env_key("WECOM_ALLOWED_CHATS", "")
+        print(f"[OK] 个人用模式：已从企微后台自动识别创建者 userid ({creator}) 并写入 WECOM_ALLOWED_USERS（仅本人可用）。")
+        return
+
+    existing = get_env_value("WECOM_ALLOWED_USERS")
+    try:
+        ans = input(f"[?] 未能自动提取创建者 ID，请输入你的企业微信 userid 限定仅本人可用{f' [当前: {existing}]' if existing else ''}: ").strip()
+    except EOFError:
+        ans = ""
+    final_uid = ans or existing
+    if final_uid:
+        upsert_env_key("WECOM_ALLOWED_USERS", final_uid)
+        upsert_env_key("WECOM_ALLOWED_CHATS", "")
+        print(f"[OK] 个人用模式：WECOM_ALLOWED_USERS 已写入 {final_uid}。")
+
+
+def ask_wecom_group_import():
+    """企业微信公用模式下的特定群白名单授权交互（方案 A）。"""
+    print("\n" + "=" * 46)
+    print("        企业微信公用模式 - 白名单配置")
+    print("=" * 46)
+    print(">> 默认模式：WECOM_ALLOWED_USERS 与 WECOM_ALLOWED_CHATS 保持为空，企业内全员均可访问。")
+    print()
+    choice = input("[?] 是否需要将特定企业微信群授权为白名单（仅该群成员可用）？[Y/N] (默认 N): ").strip().lower()
+    if choice == "y":
+        run_cmd([sys.executable, str(ROOT_DIR / "scripts" / "import_wecom_group.py")])
+    else:
+        upsert_env_key("WECOM_ALLOWED_USERS", "")
+        upsert_env_key("WECOM_ALLOWED_CHATS", "")
+        print("[OK] 已将企业微信设为全员开放模式（WECOM_ALLOWED_USERS / WECOM_ALLOWED_CHATS 已清空）。")
+
+
+def setup_wecom_auto(mode: str = "personal"):
+    """企业微信自动化配置：auto_wecom 浏览器自动化（扫码登录→复用/创建机器人→设置使用方式→读凭据）+ WS 长连接实测。"""
     auto_dir = ROOT_DIR / "auto_wecom"
     if not auto_dir.exists():
         print("[ERROR] 未找到 auto_wecom 自动化目录。")
         return
+
+    mode_label = "个人用" if mode == "personal" else "公用"
+    print(f"\n[*] 准备企业微信自动化配置环境（已选定: {mode_label} 模式）...")
 
     node_modules = auto_dir / "node_modules"
     if not (node_modules / "playwright").exists():
@@ -560,16 +653,24 @@ def setup_wecom_auto():
         run_cmd(["npm", "install", "--no-audit", "--no-fund"], cwd=auto_dir)
     ensure_playwright_chromium(auto_dir)
 
-    print("[*] 正在执行企业微信自动化配置（会打开浏览器，需用企业微信 App 扫码登录管理后台）...")
-    code = run_cmd(["npm", "run", "wecom:setup"], cwd=auto_dir)
+    print(f"[*] 正在执行企业微信自动化配置（{mode_label}，会打开浏览器，需用企业微信 App 扫码登录管理后台）...")
+    custom_env = {"WECOM_DEPLOY_MODE": mode}
+    npm_cmd = ["npm", "run", "wecom:setup", "--", f"--{mode}"]
+    code = run_cmd(npm_cmd, cwd=auto_dir, env=custom_env)
     if code != 0:
         print(f"[!] 企业微信自动化配置退出，返回码: {code}")
         return
 
-    # WS 长连接实测（复用 setup_wecom.py 的 test_connection；会短暂挤掉旧连接，服务自动重连）
+    if mode == "personal":
+        apply_wecom_personal_allowlist()
+    else:
+        upsert_env_key("WECOM_ALLOWED_USERS", "")
+        upsert_env_key("WECOM_ALLOWED_CHATS", "")
+
     bot_id = get_env_value("WECOM_BOT_ID")
     secret = get_env_value("WECOM_SECRET")
     if bot_id and secret:
+        # WS 长连接实测（复用 setup_wecom.py 的 test_connection；会短暂挤掉旧连接，服务自动重连）
         import asyncio
 
         from scripts.setup_wecom import test_connection
@@ -582,6 +683,12 @@ def setup_wecom_auto():
             print(f"[!] 长连接实测失败：{detail}（请核对机器人详情页配置方式为长连接）")
     else:
         print("[!] 未在 .env 中检测到 WECOM_BOT_ID/WECOM_SECRET，跳过长连接实测。")
+
+    if bot_id and secret:
+        offer_restart("企业微信凭据已写入 .env")
+
+    if mode == "public":
+        ask_wecom_group_import()
 
 
 def ask_group_import():
@@ -719,18 +826,20 @@ def main_menu():
         print(" 2. 配置飞书 - 公用：全部成员可用")
         print(" 3. └─ 一键授权飞书群成员：基于2，限制仅特定群成员可用")
         print("\n【企业微信接入】")
-        print(" 4. 配置企业微信")
+        print(" 4. 配置企业微信 - 个人：仅创建者可用")
+        print(" 5. 配置企业微信 - 公用：全部成员可用")
+        print(" 6. └─ 一键授权企微特定群：基于5，限制仅特定群成员可用")
         print("\n【模型供应商】")
-        print(" 5. 模型供应商与初始运行配置（API Key / Provider / Model / Effort / Mode）")
+        print(" 7. 模型供应商与初始运行配置（API Key / Provider / Model / Effort / Mode）")
         print("\n【系统】")
-        print(" 6. 配置开机自启（每次开机自动静默后台运行）")
-        print(" 7. 查看/重置初始化配置（工作空间/运行环境/模型与初始偏好）")
+        print(" 8. 配置开机自启（每次开机自动静默后台运行）")
+        print(" 9. 查看/重置初始化配置（工作空间/运行环境/模型与初始偏好）")
         print("\n【退出】")
         print(" 0. 退出向导（完成并显示启动说明）")
         print()
 
         try:
-            choice = input("请选择 [0-7]: ").strip()
+            choice = input("请选择 [0-9]: ").strip()
         except (KeyboardInterrupt, EOFError):
             print("\n已退出。")
             break
@@ -743,13 +852,17 @@ def main_menu():
         elif choice == "3":
             run_cmd([sys.executable, str(ROOT_DIR / "scripts" / "import_feishu_group.py")])
         elif choice == "4":
-            setup_wecom_auto()
+            setup_wecom_auto("personal")
         elif choice == "5":
+            setup_wecom_auto("public")
+        elif choice == "6":
+            run_cmd([sys.executable, str(ROOT_DIR / "scripts" / "import_wecom_group.py")])
+        elif choice == "7":
             run_cmd([sys.executable, str(ROOT_DIR / "scripts" / "manage_models.py")])
             configure_initial_preferences()
-        elif choice == "6":
+        elif choice == "8":
             configure_autostart()
-        elif choice == "7":
+        elif choice == "9":
             show_init_config()
         elif choice in ("0", "q", "exit"):
             finish_setup()
@@ -769,7 +882,7 @@ def finish_setup():
     else:
         print("  启动服务      : 双击 launcher_macos/MyClaw.command（或运行 bash scripts/restart_mac.sh）")
         print("  重新配置      : 双击 launcher_macos/MyClaw-Setup.command 重跑向导")
-    print("  开机自启      : 配置中心选 6")
+    print("  开机自启      : 配置中心选 8")
     print("  健康检查      : curl http://127.0.0.1:8080/health")
     print("=" * 50)
 
@@ -780,7 +893,7 @@ if __name__ == "__main__":
     status = collect_init_status()
     if status["workspace_done"] and status["environment_done"] and status["model_done"]:
         print("[OK] 初始化设置已完成（工作空间 / 运行环境 / 模型供应商），跳过 Step 1-3。")
-        print("     （如需查看或重新配置初始化项：配置中心选 7）")
+        print("     （如需查看或重新配置初始化项：配置中心选 9）")
     else:
         run_init_steps()
     main_menu()

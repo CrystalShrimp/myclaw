@@ -91,3 +91,4 @@ archive/
 
 # Python 工具缓存
 .ruff_cache/
+.env.feishu-bak

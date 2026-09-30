@@ -2,7 +2,7 @@
     "appName":  "myclaw",
     "appDescription":  "用于接入 myclaw 的飞书机器人",
     "appIconPath":  "./icon.png",
-    "botName":  "myclaw 助手",
+    "botName":  "myclaw",
     "reuseStartedApp":  false,
     "permissionsImportJsonPath":  "./feishu-permissions.json",
     "enableGroupMessagePermission":  true,

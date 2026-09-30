@@ -163,41 +163,42 @@ def _write_myclaw_settings() -> None:
 
 
 def _strip_myclaw_hooks(workspace: str) -> None:
-    """移除 workspace/.claude/settings.local.json 里 myclaw 注入过的 hook 条目。
+    """移除 workspace/.claude/settings(.local).json 里遗留的 pre_tool_use.py hook 条目。
 
-    按 hook script 路径子串匹配；只清自己注入的，不动用户其他配置。
-    文件清空到 {} 才删，否则保留（用户可能还有 permissions 等 key）。
+    因为 myclaw 已通过 --settings 显式挂载 config/claude_settings.json，
+    若工作区 .claude/settings.json 或 settings.local.json 也存在 pre_tool_use.py，
+    Claude Code 会合并两份 hooks 导致每次工具调用触发两次 PreToolUse 审批。
     """
     from pathlib import Path
 
-    f = Path(workspace) / ".claude" / "settings.local.json"
-    if not f.exists():
-        return
-    try:
-        data = json.loads(f.read_text("utf-8"))
-    except Exception:
-        return
-    pre = data.get("hooks", {}).get("PreToolUse")
-    if not pre:
-        return
-    needle = str(MYCLAW_ROOT / "scripts" / "hooks" / "pre_tool_use.py")
-    kept = [
-        e for e in pre
-        if not any(needle in h.get("command", "") for h in e.get("hooks", []))
-    ]
-    if kept == pre:
-        return
-    if kept:
-        data.setdefault("hooks", {})["PreToolUse"] = kept
-    else:
-        data.get("hooks", {}).pop("PreToolUse", None)
-        if not data.get("hooks"):
-            data.pop("hooks", None)
-    if data == {}:
-        f.unlink()
-    else:
-        f.write_text(json.dumps(data, indent=2, ensure_ascii=False), "utf-8")
-    logger.info("Stripped myclaw hooks from %s", f)
+    for fname in ("settings.local.json", "settings.json"):
+        f = Path(workspace) / ".claude" / fname
+        if not f.exists():
+            continue
+        try:
+            data = json.loads(f.read_text("utf-8"))
+        except Exception:
+            continue
+        pre = data.get("hooks", {}).get("PreToolUse")
+        if not pre:
+            continue
+        kept = [
+            e for e in pre
+            if not any("pre_tool_use.py" in h.get("command", "") for h in e.get("hooks", []))
+        ]
+        if kept == pre:
+            continue
+        if kept:
+            data.setdefault("hooks", {})["PreToolUse"] = kept
+        else:
+            data.get("hooks", {}).pop("PreToolUse", None)
+            if not data.get("hooks"):
+                data.pop("hooks", None)
+        if data == {}:
+            f.unlink()
+        else:
+            f.write_text(json.dumps(data, indent=2, ensure_ascii=False), "utf-8")
+        logger.info("Stripped duplicate pre_tool_use hooks from %s", f)
 
 
 async def _ensure_hook_config(workspace: str) -> None:

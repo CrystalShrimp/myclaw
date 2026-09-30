@@ -209,24 +209,36 @@ def handle_mode_switch(target: UserTarget, mode: str) -> str:
     preferences.mode = mode
     preferences_manager.save(target.user_id, preferences)
 
-    asyncio.get_running_loop().create_task(_check_and_run_pending(target))
-
     mode_labels = {"h": "严格模式 (h)", "m": "平衡模式 (m)", "l": "全自动模式 (l)"}
-    return f"已设置审批模式: {mode_labels.get(mode, mode)}"
+    lbl = mode_labels.get(mode, mode)
+    asyncio.get_running_loop().create_task(
+        _check_and_run_pending(target, prev_ack=f"✅ 已选择审批模式：`{lbl}`")
+    )
+    return f"已设置审批模式: {lbl}"
 
 
 def handle_level_switch(target: UserTarget, approval_id: str, level: str) -> str:
+    from app.profiles import profile_level_models
+
     if level not in ("haiku", "sonnet", "opus"):
         level = "sonnet"
     preferences = preferences_manager.get(target.user_id)
     preferences.level = level
     preferences_manager.save(target.user_id, preferences)
-    approval_manager.set_switch_model(approval_id, level)
-    asyncio.get_running_loop().create_task(
-        approval_manager.handle_decision(approval_id, target.user_id, True)
+    actual_model = (
+        profile_level_models(preferences.model).get(level, level)
+        if preferences.model
+        else level
     )
-    asyncio.get_running_loop().create_task(_check_and_run_pending(target))
-    return f"已切换模型规格: {level}"
+    if approval_id:
+        approval_manager.set_switch_model(approval_id, level)
+        asyncio.get_running_loop().create_task(
+            approval_manager.handle_decision(approval_id, target.user_id, True)
+        )
+    asyncio.get_running_loop().create_task(
+        _check_and_run_pending(target, prev_ack=f"✅ 已选择模型规格：`{actual_model}`")
+    )
+    return f"已切换模型规格: {actual_model}"
 
 
 _EFFORT_LABELS = {
@@ -245,10 +257,12 @@ def handle_effort_switch(target: UserTarget, effort: str) -> str:
     preferences_manager.save(target.user_id, preferences)
 
     async def _apply() -> None:
-        if old_effort != effort:
+        if old_effort and old_effort != effort:
             # effort 是进程启动参数，复用旧进程不会生效，必须 teardown
             await claude_cli_loop.cancel_and_wait(skey_for(target))
-        await _check_and_run_pending(target)
+        await _check_and_run_pending(
+            target, prev_ack=f"✅ 已选择思考力度：`{_EFFORT_LABELS[effort]}`"
+        )
 
     asyncio.get_running_loop().create_task(_apply())
     return f"已切换思考力度: {_EFFORT_LABELS[effort]}"
@@ -265,14 +279,10 @@ def handle_profile_switch(target: UserTarget, skey: str, profile_name: str) -> t
     preferences.model = profile_name
     preferences_manager.save(target.user_id, preferences)
     claude_cli_loop.cancel_by_user(skey)
-    ok, detail = test_profile(profile_name)
-
-    if ok:
-        asyncio.get_running_loop().create_task(_check_and_run_pending(target))
-
-    return (
-        ("success", f"模型已切换为 {label}") if ok else ("error", f"模型不可用: {label} ({detail})")
+    asyncio.get_running_loop().create_task(
+        _check_and_run_pending(target, prev_ack=f"✅ 已选择模型供应商：`{label}`")
     )
+    return "success", f"模型供应商已切换为 {label}"
 
 
 def handle_session_resume(target: UserTarget, skey: str, session_id: str) -> str:

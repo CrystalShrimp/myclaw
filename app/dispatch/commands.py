@@ -84,8 +84,25 @@ async def _check_and_run_pending(target: UserTarget) -> bool:
             session_manager.save_session(session)
 
             profile_label = profiles.get(preferences.model, {}).get("label", preferences.model)
+            actual_model = profile_level_models(preferences.model).get(preferences.level, preferences.level)
             mode_labels = {"h": "🛡️ 严格模式 (h)", "m": "⚖️ 平衡模式 (m)", "l": "⚡ 全自动模式 (l)"}
             mode_lbl = mode_labels.get(preferences.mode, preferences.mode)
+
+            reply = ReplyContext(target)
+            if pending == "__reset_only__":
+                msg_lines = [
+                    "🎉 初始配置已全部就绪！",
+                    "",
+                    "📋 当前运行设置：",
+                    f"• 供应商 (Provider)：`{profile_label}`",
+                    f"• 模型 (Model)：`{actual_model}`",
+                    f"• 思考力度 (Effort)：`{preferences.effort}`",
+                    f"• 审批模式 (Mode)：`{mode_lbl}`",
+                    "",
+                    "💡 现在您可以直接发送消息开始对话。"
+                ]
+                await reply.text("\n".join(msg_lines))
+                return True
 
             prompt_preview = pending if len(pending) <= 30 else pending[:27] + "..."
             msg_lines = [
@@ -93,13 +110,12 @@ async def _check_and_run_pending(target: UserTarget) -> bool:
                 "",
                 "📋 当前运行设置：",
                 f"• 供应商 (Provider)：`{profile_label}`",
-                f"• 规格 (Model Level)：`{preferences.level}`",
+                f"• 模型 (Model)：`{actual_model}`",
                 f"• 思考力度 (Effort)：`{preferences.effort}`",
                 f"• 审批模式 (Mode)：`{mode_lbl}`",
                 "",
                 f"正在全自动为您执行暂存的任务：`{prompt_preview}` ..."
             ]
-            reply = ReplyContext(target)
             await reply.text("\n".join(msg_lines))
             asyncio.get_running_loop().create_task(_run_claude(pending, target, session))
             return True
@@ -166,16 +182,49 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
             await reply.text("没有正在运行的任务。")
         return
 
-    # --- /reset: reset all setup preferences for testing ---
+    # --- /reset: reset all setup preferences and immediately pop up setup cards ---
     if text_lower in ("/reset", "重置"):
-        preferences = preferences_manager.get(open_id)
-        preferences.model = ""
-        preferences.level = ""
-        preferences.mode = ""
-        preferences.effort = ""
-        preferences_manager.save(open_id, preferences)
+        await claude_cli_loop.cancel_and_wait(skey_for(target))
+        preferences_manager.clear(open_id)
+        session = session_manager.get_user_session(skey_for(target))
+        if not session:
+            session = session_manager.create_session(
+                skey_for(target), chat_id if is_group else "",
+            )
+        if not session.pending_prompt.strip():
+            session.pending_prompt = "__reset_only__"
+            session_manager.save_session(session)
+
+        profiles = discover_profiles()
+        default_profile = get_active_profile()
+        if default_profile not in profiles and profiles:
+            default_profile = next(iter(profiles.keys()))
+
+        reset_views: list[tuple[str, dict]] = [
+            ("provider_selection", {
+                "approval_id": uuid.uuid4().hex[:12],
+                "profiles": profiles,
+                "active_profile": "",
+            }),
+            ("level_selection", {
+                "approval_id": uuid.uuid4().hex[:12],
+                "current_model": "",
+                "models_map": profile_level_models(default_profile),
+            }),
+            ("effort_selection", {
+                "approval_id": uuid.uuid4().hex[:12],
+                "current_effort": "",
+            }),
+            ("mode_selection", {
+                "approval_id": uuid.uuid4().hex[:12],
+                "active_mode": "",
+            }),
+        ]
+        for kind, payload in reset_views:
+            await reply.view(kind, **payload)
+
         await reply.text(
-            "已清空所有初始设置（Provider / Model Level / Mode / Effort）。",
+            "🔄 已重置初始运行配置，请直接在上方卡片中重新点选（Provider / Model / Effort / Mode）：",
         )
         return
 

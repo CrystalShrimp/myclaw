@@ -2,7 +2,7 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 import readline from "node:readline/promises";
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import { chromium, type Browser, type BrowserContext, type Locator, type Page, type Response } from "playwright";
 
 interface RawConfig {
   botName: string;
@@ -140,7 +140,8 @@ async function saveArtifacts(page: Page, config: LoadedConfig, step: string): Pr
   await mkdir(config.screenshotsDir, { recursive: true }).catch(() => undefined);
   await mkdir(config.htmlDumpDir, { recursive: true }).catch(() => undefined);
   const stamp = nowIso().replace(/[:.]/g, "-");
-  const base = `${stamp}-${step.replace(/[^a-zA-Z0-9]+/g, "-")}`;
+  const slug = step.replace(/[^\w一-鿿]+/g, "-").replace(/^-+|-+$/g, "") || "step";
+  const base = `${stamp}-${slug}`;
   const screenshotPath = path.join(config.screenshotsDir, `${base}.png`);
   const htmlPath = path.join(config.htmlDumpDir, `${base}.html`);
   let savedShot: string | null = null;
@@ -275,6 +276,36 @@ async function promptText(prompt: readline.Interface, message: string): Promise<
  * 注意：本流程基于 2026-09 的公开教程与管理后台页面结构编写，未在真机上完整验证；
  * 任一步骤失败会保存排错资料（截图/HTML）并以可恢复方式继续。
  */
+/** 抓取当前页面所有可见的 toast / 报错 / 弹窗文案（用于保存在第一现场消失前取证）。 */
+async function harvestVisibleNotices(page: Page): Promise<string> {
+  return page
+    .evaluate(() => {
+      const parts: string[] = [];
+      for (const el of Array.from(
+        document.querySelectorAll("[class*='toast'], [class*='message'], [class*='error'], [class*='warn'], [class*='tip'], [class*='dialog'], [class*='modal']")
+      )) {
+        const r = el.getBoundingClientRect();
+        const s = window.getComputedStyle(el);
+        if (r.width > 0 && r.height > 0 && s.visibility !== "hidden") {
+          const t = (el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 120);
+          if (t) parts.push(t);
+        }
+      }
+      return [...new Set(parts)].slice(0, 5).join(" | ");
+    })
+    .catch(() => "");
+}
+
+/**
+ * 创建新机器人（2026-09-29 真机逐步驱动验证的完整流程）：
+ * 1. 名称/简介：placeholder 精准定位 input 本体（placeholder 同时挂在包装 div 上，
+ *    用 input[placeholder=…] 避免定位歧义）
+ * 2. 点「API 模式」文本切换模式——默认选中普通模式！点击后表单重渲染出连接方式
+ *    radio（长连接默认选中）。文本带缩进换行，只能子串匹配。
+ * 3. 【关键】Secret 必须点「点击获取」生成——不生成时保存被客户端校验拦截
+ *    （toast「生成Secret后方可保存机器人」，且不发任何请求）
+ * 4. 保存 → createAiBot 接口 → 页面自动跳转详情页
+ */
 async function createNewBot(page: Page, config: LoadedConfig, prompt: readline.Interface, result: ResultState): Promise<string> {
   await page.goto(LIST_CREATE_URL, { waitUntil: "domcontentloaded", timeout: config.timeoutMs });
   await page.waitForTimeout(5000);
@@ -284,69 +315,213 @@ async function createNewBot(page: Page, config: LoadedConfig, prompt: readline.I
     throw new Error("创建页未找到「新建机器人」按钮（可能无创建权限，见「权限管理」页签）。");
   }
   await createBtn.click({ timeout: config.timeoutMs });
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(4000);
 
-  // 名称：优先带 label 的输入框，兜底第一个可见文本输入
-  const modal = page.locator("[class*='dialog'], [class*='modal'], [role='dialog']").first();
-  const root = (await modal.isVisible({ timeout: 3000 }).catch(() => false)) ? modal : page;
-  const nameInput = root.locator("input[type='text']").first();
+  // 1. 名称 + 简介
+  const nameInput = page.locator("input[placeholder*='名称'], input[placeholder*='机器人名']").first();
   if (!(await nameInput.isVisible({ timeout: 5000 }).catch(() => false))) {
-    throw new Error("创建弹窗未找到名称输入框。");
+    throw new Error("创建页未找到名称输入框。");
   }
   await nameInput.fill(config.botName, { timeout: config.timeoutMs });
+  const descBox = page.locator("textarea[placeholder*='简介']").first();
+  if (await descBox.isVisible({ timeout: 2000 }).catch(() => false)) {
+    await descBox.fill(config.botDescription || `${config.botName} 的企业微信智能机器人`, { timeout: config.timeoutMs }).catch(() => undefined);
+  }
 
-  // 接入模式：选「API 模式」（候选文案多种灰度写法）
-  for (const t of ["API 模式", "API模式", "API 接入", "API"]) {
-    const opt = root.getByText(new RegExp(`^${escapeRegExp(t)}$`)).first();
-    if (await opt.isVisible({ timeout: 1200 }).catch(() => false)) {
-      await opt.click({ timeout: 5000 }).catch(() => undefined);
-      break;
-    }
-  }
-  // 连接方式：确保长连接（如出现选择项）
-  for (const t of ["使用 SDK 启动长连接", "长连接"]) {
-    const opt = root.getByText(new RegExp(escapeRegExp(t))).first();
-    if (await opt.isVisible({ timeout: 1200 }).catch(() => false)) {
-      await opt.click({ timeout: 5000 }).catch(() => undefined);
-      break;
-    }
-  }
-  // 可见范围：教程要求必须添加（添加本企业/自己），出现选择框时尽力选第一项
-  const scopeAdd = root.getByText(/添加|选择.*范围|可见范围/).first();
-  if (await scopeAdd.isVisible({ timeout: 2000 }).catch(() => false)) {
-    await scopeAdd.click({ timeout: 5000 }).catch(() => undefined);
+  // 2. 切换到 API 模式（默认普通模式；radio 索引 1 = API）
+  const radioStates = () =>
+    page
+      .evaluate<Array<boolean>>("Array.from(document.querySelectorAll(\"input[type='radio']\")).map(r => r.checked)")
+      .catch(() => [] as boolean[]);
+  const apiOpt = page.getByText("API 模式").first();
+  if (await apiOpt.isVisible({ timeout: 3000 }).catch(() => false)) {
+    await apiOpt.click({ timeout: config.timeoutMs }).catch(() => undefined);
     await page.waitForTimeout(1500);
-    const firstOrg = page.getByText(/本企业|全企业|我的企业|所有人/).first();
-    if (await firstOrg.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await firstOrg.click({ timeout: 5000 }).catch(() => undefined);
+    let radios = await radioStates();
+    if (radios.length >= 2 && !radios[1]) {
+      logger.warn("首次点击未切到 API 模式，重试一次...");
+      await apiOpt.click({ timeout: 5000 }).catch(() => undefined);
+      await page.waitForTimeout(1500);
+      radios = await radioStates();
     }
-    const confirmScope = page.getByText("确定", { exact: true }).last();
-    if (await confirmScope.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await confirmScope.click({ timeout: 5000 }).catch(() => undefined);
+    if (radios.length >= 2 && !radios[1]) {
+      const art = await saveArtifacts(page, config, "创建-模式未切换");
+      throw new Error(`点击「API 模式」后 radio 仍为普通模式（${radios.join(",")}）。截图：${art.screenshotPath ?? "无"}`);
+    }
+    logger.info("已切换到 API 模式。");
+  } else {
+    logger.warn("未找到「API 模式」选项文本（可能已在该模式），继续。");
+  }
+
+  // 3. 连接方式：确保长连接（API 模式重渲染后默认选中，点选幂等）
+  for (const t of ["使用长连接", "使用 SDK 启动长连接", "长连接"]) {
+    const opt = page.getByText(t).first();
+    if (await opt.isVisible({ timeout: 1200 }).catch(() => false)) {
+      await opt.click({ timeout: 5000 }).catch(() => undefined);
+      break;
     }
   }
 
-  // 提交创建
-  const submit = root.getByText(/创建|确\s*定/).last();
-  if (!(await submit.isVisible({ timeout: 3000 }).catch(() => false))) {
-    throw new Error("创建弹窗未找到提交按钮。");
+  // 4. 【关键】生成 Secret：不生成保存必被拦截（toast：生成Secret后方可保存机器人）
+  const secretAreaText = () =>
+    page
+      .evaluate<string>(`(() => {
+        const spans = Array.from(document.querySelectorAll('*')).filter(el => el.childElementCount === 0 && (el.textContent || '').trim() === 'Secret');
+        if (!spans.length) return '';
+        let cur = spans[0];
+        for (let i = 0; i < 3 && cur; i++) {
+          cur = cur.parentElement;
+          const t = (cur.innerText || '').replace(/\\s+/g, ' ').trim();
+          if (t.length > 6 && t.length < 150) return t;
+        }
+        return '';
+      })()`)
+      .catch(() => "");
+  if (!/[A-Za-z0-9_-]{30,}/.test(await secretAreaText())) {
+    let genClicked = false;
+    for (const sel of ["button:has-text('点击获取')", "a:has-text('点击获取')", "button:has-text('生成')"]) {
+      const c = page.locator(sel);
+      const n = Math.min(await c.count().catch(() => 0), 5);
+      for (let i = 0; i < n; i++) {
+        const el = c.nth(i);
+        if (await el.isVisible({ timeout: 500 }).catch(() => false)) {
+          await el.click({ timeout: config.timeoutMs }).catch(() => undefined);
+          genClicked = true;
+          break;
+        }
+      }
+      if (genClicked) break;
+    }
+    if (!genClicked) {
+      const fb = page.getByText(/点击获取|生成\s*Secret/).first();
+      if (await fb.isVisible({ timeout: 2000 }).catch(() => false)) {
+        await fb.click({ timeout: 5000 }).catch(() => undefined);
+        genClicked = true;
+      }
+    }
+    if (genClicked) {
+      logger.info("已点击 Secret「点击获取」，等待生成...");
+      await page.waitForTimeout(1500);
+      // 可能弹确认框（只在弹窗容器内找按钮，绝不点页面级元素——左侧导航的「退出」是登出）
+      const dlg = page.locator("[class*='dialog']:visible, [class*='modal']:visible, [role='dialog']:visible").first();
+      if (await dlg.isVisible({ timeout: 2000 }).catch(() => false)) {
+        for (const t of ["确定", "生成", "确认"]) {
+          const btn = dlg.getByText(t, { exact: true }).first();
+          if (await btn.isVisible({ timeout: 800 }).catch(() => false)) {
+            await btn.click({ timeout: 5000 }).catch(() => undefined);
+            break;
+          }
+        }
+      }
+      await page.waitForTimeout(2000);
+    }
+    const secretNow = await secretAreaText();
+    if (!/[A-Za-z0-9_-]{30,}/.test(secretNow)) {
+      const toast = await harvestVisibleNotices(page);
+      const art = await saveArtifacts(page, config, "创建-Secret未生成");
+      throw new Error(`未能生成 Secret（保存会被拦截）。区域文本：「${secretNow}」${toast ? `；页面提示：${toast}` : ""}。截图：${art.screenshotPath ?? "无"}`);
+    }
+    logger.info("Secret 已生成（保存拦截解除）。");
   }
-  await submit.click({ timeout: config.timeoutMs });
-  await page.waitForTimeout(6000);
 
-  // 创建后可能直达详情，也可能回列表
-  if (page.url().includes("aibotid=")) return config.botName;
-  const names = await listExistingBots(page, config);
-  const created = names.find((n) => n.toLowerCase() === config.botName.toLowerCase()) ?? names[0];
-  if (!created) {
+  // 5. 保存：挂接口采集器（真因只存在于 POST 响应里）+ 第一现场抓取
+  const xhrLog: string[] = [];
+  const onResponse = async (resp: Response): Promise<void> => {
+    try {
+      if (resp.request().method() !== "POST") return;
+      if (!/aihelper|aibot|robot|smart/i.test(resp.url())) return;
+      let body = "";
+      try {
+        body = (await resp.text()).replace(/\s+/g, " ").slice(0, 200);
+      } catch {
+        /* 响应体读不到就只记状态码 */
+      }
+      xhrLog.push(`[HTTP ${resp.status()}] …${resp.url().slice(-90)} ${body}`);
+    } catch {
+      /* ignore */
+    }
+  };
+  page.on("response", onResponse);
+
+  try {
+    const clickSave = async (): Promise<boolean> => {
+      const groups = [
+        page.locator("button.navi_button:has-text('保存')"),
+        page.locator("button.t-button--theme-primary:has-text('保存')"),
+        page.locator("button:has-text('保存'), button:has-text('创建'), button:has-text('确定')"),
+        page.getByRole("button", { name: /保\s*存|创\s*建|确\s*定/ }),
+      ];
+      for (const group of groups) {
+        const count = Math.min(await group.count().catch(() => 0), 10);
+        for (let i = 0; i < count; i++) {
+          const opt = group.nth(i);
+          if (!(await opt.isVisible({ timeout: 600 }).catch(() => false))) continue;
+          if (await opt.isDisabled().catch(() => false)) continue;
+          await opt.scrollIntoViewIfNeeded().catch(() => undefined);
+          const clicked = await opt
+            .click({ timeout: config.timeoutMs })
+            .then(() => true)
+            .catch(() => opt.click({ timeout: 5000, force: true }).then(() => true).catch(() => false));
+          if (clicked) {
+            const label = (await opt.innerText().catch(() => "")).trim().replace(/\s+/g, " ");
+            logger.info(`已点击提交按钮：「${label || "(无文本)"}」`);
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+    if (!(await clickSave())) {
+      throw new Error("创建页未找到提交按钮（保存/创建/确定）。");
+    }
+
+    await page.waitForTimeout(1200);
+    const earlyToast = await harvestVisibleNotices(page);
+    logger.info(`保存点击后 URL：${page.url()}${earlyToast ? `；页面提示：${earlyToast}` : ""}`);
+    await page.waitForTimeout(7000);
+
+    // 成功特征：页面跳到详情页（aibotid=）
+    if (page.url().includes("aibotid=")) {
+      result.warnings.push("新建机器人已完成，请核对详情页配置方式为「API 模式 + 长连接」。");
+      return config.botName;
+    }
+
+    // 失败诊断：保存按钮还在 = 未提交成功
+    let postSaveNote = "";
+    const saveStill = page.locator("button:has-text('保存')").first();
+    if (await saveStill.isVisible({ timeout: 2000 }).catch(() => false)) {
+      postSaveNote = (await harvestVisibleNotices(page)) || "无可见报错提示";
+      await saveArtifacts(page, config, "创建-保存后现场");
+    }
+
+    // 列表核验带重试（异步出列兜底），严格精确匹配
+    let names: string[] = [];
+    for (let i = 0; i < 3 && names.length === 0; i++) {
+      if (i > 0) {
+        await page.waitForTimeout(5000);
+      }
+      names = await listExistingBots(page, config);
+    }
+    const created = names.find((n) => n.toLowerCase() === config.botName.toLowerCase());
+    if (created) {
+      result.warnings.push("新建机器人已完成，请核对详情页配置方式为「API 模式 + 长连接」。");
+      return created;
+    }
     const takeover = isNonInteractive()
-      ? "创建提交后未在列表中发现新机器人（非交互环境）。"
-      : await promptText(prompt, `创建提交后未自动确认，若列表已出现新机器人请输入其名称（候选：${names.join("、") || "无"}），否则直接回车：`);
-    if (!takeover) throw new Error("创建流程未确认成功，请人工在浏览器中完成创建后重跑本脚本（已有机器人会自动复用）。");
+      ? ""
+      : await promptText(prompt, `保存后未在列表中确认到「${config.botName}」。若列表已出现请输入其名称（候选：${names.join("、") || "无"}），否则直接回车退出：`);
+    if (!takeover) {
+      const xhrTail = xhrLog.slice(-5).join(" ⟂ ");
+      const reason = postSaveNote || earlyToast || "无可见报错提示";
+      throw new Error(
+        `保存后未在机器人列表中确认到「${config.botName}」（当前列表：${names.join("、") || "空"}）。${reason}` +
+          (xhrTail ? `。保存相关接口响应：${xhrTail}` : "（未捕获到保存接口请求——保存点击未触发表单提交）")
+      );
+    }
     return takeover;
+  } finally {
+    page.off("response", onResponse);
   }
-  result.warnings.push("创建流程为防御式实现（未真机全量验证），请核对详情页配置。");
-  return created;
 }
 
 async function main(): Promise<void> {

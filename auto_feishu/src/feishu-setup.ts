@@ -58,6 +58,7 @@ interface ResultState {
   updatedAt: string;
   appId: string | null;
   maskedSecret: string | null;
+  creatorOpenId: string | null;
   existingAppReused: boolean;
   existingStartedAppChosen: boolean;
   reusedAppName: string | null;
@@ -286,6 +287,7 @@ async function createInitialResult(config: LoadedConfig): Promise<ResultState> {
     updatedAt: nowIso(),
     appId: null,
     maskedSecret: null,
+    creatorOpenId: null,
     existingAppReused: false,
     existingStartedAppChosen: false,
     reusedAppName: null,
@@ -2421,7 +2423,7 @@ async function enableBotCapability(ctx: StepContext): Promise<void> {
 // result.json 里的 permissionsImported / eventSubscriptionConfigured 只是历史快照，
 // 后台任何手动改动都不会使其失效。跳过决策必须基于当前线上状态，而不是缓存标志。
 
-async function probeSelfManageScopeOpenApi(appId?: string | null, appSecret?: string | null): Promise<{ ok: boolean; detail: string }> {
+async function probeSelfManageScopeOpenApi(appId?: string | null, appSecret?: string | null): Promise<{ ok: boolean; detail: string; creatorId?: string }> {
   if (!appId || !appSecret) return { ok: true, detail: "" };
   try {
     const tokenResp = await fetch("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", {
@@ -2436,9 +2438,12 @@ async function probeSelfManageScopeOpenApi(appId?: string | null, appSecret?: st
       method: "GET",
       headers: { Authorization: `Bearer ${tokenData.tenant_access_token}` }
     });
-    const appData = (await appResp.json()) as { code?: number; msg?: string };
+    const appData = (await appResp.json()) as { code?: number; msg?: string; data?: { app?: { creator_id?: string } } };
     if (appData.code === 99991672) {
       return { ok: false, detail: "OpenAPI 实测 application:application:self_manage 尚未生效 (code=99991672)" };
+    }
+    if (appData.code === 0) {
+      return { ok: true, detail: "", creatorId: appData?.data?.app?.creator_id || "" };
     }
     return { ok: true, detail: "" };
   } catch {
@@ -3405,6 +3410,31 @@ async function mainV2(): Promise<void> {
       });
     } else {
       logger.info("提示：应用未提交发布，已跳过根目录 .env 的凭据写入，保持原有配置不被覆盖。");
+    }
+
+    // 个人用收尾数据：会话内解析应用创建者 open_id。权限刚发版后对 OpenAPI 生效
+    // 可能有几十秒延迟，这里带重试拿稳并写入结果文件，向导收尾直接读（避免
+    // 浏览器关闭后再查、恰好撞上权限传播窗口而失败）。
+    if (PERSONAL_MODE && ctx.result.appId && ctx.runtimeAppSecret) {
+      for (let attempt = 1; attempt <= 6 && !ctx.result.creatorOpenId; attempt++) {
+        const probe = await probeSelfManageScopeOpenApi(ctx.result.appId, ctx.runtimeAppSecret);
+        if (probe.creatorId) {
+          ctx.result.creatorOpenId = probe.creatorId;
+          logger.info(`已解析应用创建者 open_id：${probe.creatorId}（个人用白名单数据已备好）`);
+          break;
+        }
+        if (probe.ok) {
+          break;
+        }
+        if (attempt < 6) {
+          logger.info(`等待 self_manage 权限对 OpenAPI 生效（${attempt}/6）...`);
+          await new Promise((resolve) => setTimeout(resolve, 10000));
+        }
+      }
+      if (!ctx.result.creatorOpenId) {
+        ctx.result.warnings.push("未能解析创建者 open_id（self_manage 权限生效延迟）；向导收尾会再尝试直连查询。");
+      }
+      await persistResult(config, ctx.result);
     }
 
     ctx.result.status = "completed";

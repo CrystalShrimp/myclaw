@@ -483,11 +483,24 @@ def apply_personal_allowlist():
         print("[!] .env 中缺少有效的飞书凭据，未改动 ALLOWED_USERS。")
         return
 
+    # 优先用自动化会话内解析好的创建者（浏览器关闭前已带重试验证权限生效）
+    creator = ""
     try:
-        creator = fetch_app_creator_open_id(app_id, app_secret)
-    except Exception as e:
-        print(f"[!] 查询应用创建者失败（{e}），未改动 ALLOWED_USERS。")
-        return
+        result_file = ROOT_DIR / "auto_feishu" / "feishu-app-result.json"
+        data = json.loads(result_file.read_text(encoding="utf-8"))
+        if data.get("appId") == app_id:
+            creator = data.get("creatorOpenId") or ""
+    except Exception:
+        creator = ""
+    if creator:
+        print(f"[OK] 已从自动化结果读取应用创建者 {creator}。")
+    else:
+        try:
+            creator = fetch_app_creator_open_id(app_id, app_secret)
+        except Exception as e:
+            print(f"[!] 查询应用创建者失败（{e}），未改动 ALLOWED_USERS。")
+            print("    可打开报错中的链接开通任一所需权限，或稍后重跑「个人用」配置自动补齐。")
+            return
     if not creator:
         print("[!] 未获取到应用创建者 open_id，未改动 ALLOWED_USERS。")
         return

@@ -89,20 +89,41 @@ def is_local_service_running() -> bool:
 
 
 def stop_local_service() -> None:
-    """暂停本地网关服务以独占企微机器人长连接（stop_*.ps1 按项目根路径匹配并排除交互脚本）。"""
-    candidates = sorted((ROOT_DIR / "scripts").glob("stop_*.ps1"))
-    if not candidates:
-        raise RuntimeError("未找到 scripts/stop_*.ps1")
-    subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-         "-File", str(candidates[0]), "-CallerPid", str(os.getpid())],
-        capture_output=True, text=True,
-    )
+    """暂停本地网关服务以独占企微机器人长连接（win: stop_*.ps1 / mac: stop_mac.sh）。"""
+    if sys.platform == "win32":
+        candidates = sorted((ROOT_DIR / "scripts").glob("stop_*.ps1"))
+        if not candidates:
+            raise RuntimeError("未找到 scripts/stop_*.ps1")
+        subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-File", str(candidates[0]), "-CallerPid", str(os.getpid())],
+            capture_output=True, text=True,
+        )
+    else:
+        candidates = sorted((ROOT_DIR / "scripts").glob("stop_mac*.sh"))
+        if not candidates:
+            raise RuntimeError("未找到 scripts/stop_mac.sh")
+        subprocess.run(["bash", str(candidates[0])], capture_output=True, text=True)
     time.sleep(1)
 
 
 def start_local_service() -> bool:
     """恢复本地网关服务并等待健康检查通过；返回是否成功。"""
+    if sys.platform != "win32":
+        candidates = sorted((ROOT_DIR / "scripts").glob("restart_mac*.sh"))
+        if not candidates:
+            print("[!] 未找到 scripts/restart_mac.sh，请手动重启服务。")
+            return False
+        # restart_mac.sh 自带停旧→起新→等健康检查（含 60s 等待），阻塞执行完成后即在线
+        subprocess.run(["bash", str(candidates[0])], cwd=str(ROOT_DIR), capture_output=True, text=True)
+        print("[*] 正在恢复本地服务...")
+        for _ in range(20):
+            time.sleep(1)
+            if is_local_service_running():
+                print("[OK] 本地服务已恢复在线（新白名单已随之生效）。")
+                return True
+        print("[!] 服务未恢复在线，请手动运行 scripts/restart_mac.sh。")
+        return False
     mains = [b for b in sorted((ROOT_DIR / "launcher_windows").glob("*.bat"))
              if not b.name.endswith("-Setup.bat") and not b.name.endswith("-Restart.bat")]
     if not mains:

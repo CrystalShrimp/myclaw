@@ -36,6 +36,35 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 # `from scripts.import_feishu_group import ...` 需要项目根目录在搜索路径上
 sys.path.insert(0, str(ROOT_DIR))
 
+RESERVED_COMMANDS = {
+    "reset", "help", "stop", "clear", "cd", "session", "mode", "model", "effort", "status", "diff"
+}
+
+
+def validate_bot_name(name: str) -> tuple[bool, str]:
+    """校验机器人名称是否合法（严禁空格、特殊符号与系统指令）。"""
+    if not name or not name.strip():
+        return False, "名称不能为空"
+    trimmed = name.strip()
+    if any(c.isspace() for c in name) or "\u3000" in name:
+        return False, "名称严禁包含任何空格或换行（会导致群聊 @ 识别失效）"
+    if len(trimmed) < 2:
+        return False, "名称过短，至少需要 2 个字符"
+    if len(trimmed) > 20:
+        return False, "名称过长，建议在 20 个字符以内（避免移动端群聊 @ 被截断）"
+    if "@" in trimmed or "＠" in trimmed:
+        return False, "名称不能包含「@」符号"
+    if "/" in trimmed or "\\" in trimmed:
+        return False, "名称不能包含斜杠「/」或反斜杠「\\」（与系统指令冲突）"
+    import re
+    if re.search(r"[:;,'\"`|<>&\uff01-\uff0f\uff1a-\uff20]", trimmed):
+        return False, "名称不能包含特殊标点符号（如冒号、逗号、引号、尖括号等）"
+    if trimmed.lower() in RESERVED_COMMANDS:
+        return False, f"「{trimmed}」为系统内置保留指令，不能作为机器人名称"
+    if not re.match(r"^[\w\u4e00-\u9fa5-]+$", trimmed):
+        return False, "名称仅支持中文、英文字母、数字、下划线「_」或短横线「-」"
+    return True, ""
+
 
 def run_cmd(cmd: list[str], cwd: Path | None = None, check: bool = False, env: dict | None = None) -> int:
     """运行子命令并实时透传标准输入输出。"""
@@ -103,8 +132,10 @@ def upsert_env_key(key: str, value: str):
 
 
 def get_recommended_workspace() -> Path:
-    """获取默认初始运行目录：默认为当前项目所在目录。"""
-    return ROOT_DIR.resolve()
+    """获取默认初始运行目录：默认为项目根目录下的 workspace 独立沙盒目录。"""
+    ws = ROOT_DIR / "workspace"
+    ws.mkdir(parents=True, exist_ok=True)
+    return ws.resolve()
 
 
 def infer_claude_session_dir() -> Path:
@@ -241,23 +272,25 @@ def configure_initial_preferences():
     print("  【初始运行偏好配置】(Provider / Model / Effort / Mode)")
     print("-" * 60)
 
-    # 1. Provider
+    # 1. Provider（必须显式选择，直接回车不生效）
     if profiles:
         prof_keys = list(profiles.keys())
-        default_prof = active_prof if active_prof in prof_keys else prof_keys[0]
-        print(f"\n  [1/4] 选择默认供应商 (Provider) [当前默认: {default_prof}]:")
+        current_prof = active_prof if active_prof in prof_keys else prof_keys[0]
+        print(f"\n  [1/4] 选择默认供应商 (Provider) [当前生效: {current_prof}]:")
         for idx, k in enumerate(prof_keys, 1):
             p = profiles[k]
             label = p.get("label", k) if isinstance(p, dict) else getattr(p, "label", k)
-            mark = " (默认)" if k == default_prof else ""
-            print(f"    {idx}. {k} - {label}{mark}")
-        raw_p = input(f"  请选择序号或名称 (直接回车 = {default_prof}): ").strip()
-        chosen_provider = default_prof
-        if raw_p:
+            print(f"    {idx}. {k} - {label}")
+        chosen_provider = ""
+        while True:
+            raw_p = input("  请选择序号或名称: ").strip()
             if raw_p.isdigit() and 1 <= int(raw_p) <= len(prof_keys):
                 chosen_provider = prof_keys[int(raw_p) - 1]
-            elif raw_p in profiles:
+                break
+            if raw_p in profiles:
                 chosen_provider = raw_p
+                break
+            print("[!] 无效输入，请输入列表中的序号或供应商名称。")
     else:
         chosen_provider = active_prof
 
@@ -320,9 +353,9 @@ def configure_initial_preferences():
 
     # 4. Mode (m / h / l)
     mode_options = [
-        ("m", "中权限 (m) - 读/搜索自动放行，修改代码与执行命令需确认（推荐）"),
-        ("h", "高权限 (h) - 全自动执行，无需人工确认"),
-        ("l", "低权限 (l) - 所有工具调用均需人工确认"),
+        ("m", "平衡模式 (m) - 只读/搜索自动放行，修改代码与执行命令需审批（推荐）"),
+        ("h", "严格模式 (h) - 严格安全全审批，所有工具调用均需人工确认"),
+        ("l", "全自动模式 (l) - 自动放行全部工具调用，全自动运行无需人工确认"),
     ]
     default_mode = current.mode if current.mode in ("m", "h", "l") else "m"
     print(f"\n  [4/4] 选择默认权限审批模式 (Mode) [当前默认: {default_mode}]:")
@@ -555,6 +588,7 @@ def setup_feishu(mode: str):
 
     mode_label = "个人用" if mode == "personal" else "公用"
     print(f"\n[*] 准备飞书自动化配置环境（已选定: {mode_label} 模式）...")
+    print("    [提示] 机器人自命名严禁包含空格（否则群聊 @ 识别失效），建议使用 2-20 位中文、英文或数字。")
 
     # 1. 确保 auto_feishu npm 依赖
     node_modules = auto_feishu_dir / "node_modules"
@@ -646,6 +680,7 @@ def setup_wecom_auto(mode: str = "personal"):
 
     mode_label = "个人用" if mode == "personal" else "公用"
     print(f"\n[*] 准备企业微信自动化配置环境（已选定: {mode_label} 模式）...")
+    print("    [提示] 机器人自命名严禁包含空格（否则群聊 @ 识别失效），建议使用 2-20 位中文、英文或数字。")
 
     node_modules = auto_dir / "node_modules"
     if not (node_modules / "playwright").exists():

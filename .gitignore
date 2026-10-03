@@ -22,6 +22,7 @@ config/shortcuts.json
 config/claude_settings.json
 config/active_profile
 config/global_preferences.json
+config/feishu_group_imports.json
 
 # Logs
 *.log
@@ -92,3 +93,7 @@ archive/
 # Python 工具缓存
 .ruff_cache/
 .env.feishu-bak
+
+# 默认初始工作目录（保留 .gitkeep，忽略客户任意测试产生的临时文件）
+workspace/*
+!workspace/.gitkeep

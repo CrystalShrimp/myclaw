@@ -58,6 +58,65 @@ const CDP_URL = (() => {
   if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1];
   return (process.env.WECOM_CDP_URL || "").trim() || "";
 })();
+const BOT_NAME_ARG = (() => {
+  const i = process.argv.indexOf("--bot-name");
+  if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1].trim();
+  const pref = process.argv.find((a) => a.startsWith("--bot-name=")) || "";
+  if (pref) return pref.slice("--bot-name=".length).trim();
+  return (process.env.WECOM_BOT_NAME || "").trim();
+})();
+
+const RESERVED_COMMANDS = new Set([
+  "reset", "help", "stop", "clear", "cd", "session", "mode", "model", "effort", "status", "diff"
+]);
+
+export function validateBotName(name: string): { valid: boolean; reason?: string } {
+  if (!name || !name.trim()) {
+    return { valid: false, reason: "机器人名称不能为空" };
+  }
+  const trimmed = name.trim();
+
+  // 1. 检查任何空白字符（半角空格、全角空格、制表符、换行符）
+  if (/\s/.test(name) || name.includes("\u3000")) {
+    return { valid: false, reason: "机器人名称严禁包含任何空格或换行（会导致群聊 @ 识别失效）" };
+  }
+
+  // 2. 检查长度限制（建议 2~20 个字符）
+  if (trimmed.length < 2) {
+    return { valid: false, reason: "机器人名称过短，至少需要 2 个字符" };
+  }
+  if (trimmed.length > 20) {
+    return { valid: false, reason: "机器人名称过长，建议在 20 个字符以内（避免移动端群聊 @ 被截断）" };
+  }
+
+  // 3. 检查 @ 符号
+  if (trimmed.includes("@") || trimmed.includes("＠")) {
+    return { valid: false, reason: "机器人名称不能包含「@」符号" };
+  }
+
+  // 4. 检查斜杠与反斜杠
+  if (trimmed.includes("/") || trimmed.includes("\\")) {
+    return { valid: false, reason: "机器人名称不能包含斜杠「/」或反斜杠「\\」（与系统指令冲突）" };
+  }
+
+  // 5. 检查敏感标点与特殊符号
+  const illegalCharsPattern = /[:;,'"`|<>&\uff01-\uff0f\uff1a-\uff20]/;
+  if (illegalCharsPattern.test(trimmed)) {
+    return { valid: false, reason: "机器人名称不能包含特殊标点符号（如冒号、逗号、引号、尖括号等）" };
+  }
+
+  // 6. 检查系统保留指令
+  if (RESERVED_COMMANDS.has(trimmed.toLowerCase())) {
+    return { valid: false, reason: `「${trimmed}」为系统内置保留指令，不能作为机器人名称` };
+  }
+
+  // 7. 合法字符集合验证：允许中文、英文字母、数字、下划线、短横线
+  if (!/^[\w\u4e00-\u9fa5-]+$/.test(trimmed)) {
+    return { valid: false, reason: "机器人名称仅支持中文、英文字母、数字、下划线「_」或短横线「-」" };
+  }
+
+  return { valid: true };
+}
 
 const LOGIN_URL = "https://work.weixin.qq.com/wework_admin/loginpage_wx";
 const LIST_MANAGE_URL = "https://work.weixin.qq.com/wework_admin/frame#/aiHelper/list?from=manage_tools&tab=manage";
@@ -108,8 +167,24 @@ function resolveFromRoot(rootDir: string, candidate?: string): string | undefine
 
 async function loadConfig(rootDir: string): Promise<LoadedConfig> {
   const raw = JSON.parse(await readFile(path.join(rootDir, "config.json"), "utf8")) as RawConfig;
+
+  let activeBotName = raw.botName;
+  if (BOT_NAME_ARG) {
+    const checkArg = validateBotName(BOT_NAME_ARG);
+    if (!checkArg.valid) {
+      throw new Error(`--bot-name 参数「${BOT_NAME_ARG}」不合法: ${checkArg.reason}`);
+    }
+    activeBotName = BOT_NAME_ARG;
+  } else if (raw.botName) {
+    const checkBot = validateBotName(raw.botName);
+    if (!checkBot.valid) {
+      throw new Error(`config.json 中的 botName (「${raw.botName}」) 不合法: ${checkBot.reason}。请修改配置文件。`);
+    }
+  }
+
   return {
     ...raw,
+    botName: activeBotName,
     rootDir,
     botDescription: raw.botDescription ?? "",
     envPath: resolveFromRoot(rootDir, raw.envPath) ?? path.resolve(rootDir, "..", ".env"),
@@ -776,6 +851,32 @@ async function main(): Promise<void> {
     // Step 3: 创建（如需要）
     if (!chosen) {
       logger.info("未选择已有机器人，进入创建流程...");
+      if (!isNonInteractive()) {
+        logger.info(">> 命名规则：严禁包含任何空格（否则群聊 @ 无法识别），仅支持 2-20 位中文、英文、数字、下划线或短横线。");
+        while (true) {
+          const inputName = (await promptText(
+            prompt,
+            `请输入新机器人的名称 (不可含空格，直接回车默认 "${config.botName}"): `
+          )).trim();
+          if (!inputName) {
+            const check = validateBotName(config.botName);
+            if (!check.valid) {
+              logger.error(`默认机器人名称「${config.botName}」不合法: ${check.reason}，请手动输入合法名称。`);
+              continue;
+            }
+            logger.info(`采用默认机器人名称：“${config.botName}”`);
+            break;
+          }
+          const check = validateBotName(inputName);
+          if (!check.valid) {
+            logger.warn(`[!] 输入的名称不符合规范: ${check.reason}，请重新输入。`);
+            continue;
+          }
+          config.botName = inputName;
+          logger.info(`已设置新机器人名称为：“${config.botName}”`);
+          break;
+        }
+      }
       try {
         chosen = await createNewBot(page, config, prompt, result);
         result.reused = false;
@@ -835,7 +936,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e) => {
-  logger.error(String(e));
-  process.exitCode = 1;
-});
+if (typeof require !== "undefined" && require.main === module) {
+  main().catch((e) => {
+    logger.error(String(e));
+    process.exitCode = 1;
+  });
+}

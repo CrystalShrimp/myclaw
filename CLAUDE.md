@@ -27,3 +27,29 @@ Hard rules:
 Known incident: persistent `cd launcher_windows` made the relative-path hook
 (`python scripts/hooks/pre_tool_use.py`) unresolvable and blocked ALL tools.
 Hooks now cd to `${CLAUDE_PROJECT_DIR}` first; keep that pattern.
+
+## File editing rules (encodings are load-bearing)
+
+Launcher bats are MIXED-ENCODED on purpose:
+
+- `MyClaw.bat`, `MyCodex.bat`, `*-Restart.bat` — **GBK, no chcp** (they render in
+  the default cp936 console of their own fresh window).
+- `MyClaw-Setup.bat`, `MyCodex-Setup.bat` — **UTF-8 + `chcp 65001`**.
+
+Hard rules:
+
+1. NEVER call Edit/Write on an existing `.bat`/`.cmd` that is not valid UTF-8 —
+   they read/write UTF-8 and replace GBK Chinese with U+FFFD (console mojibake,
+   eaten line endings, flash-close). Use python byte-level edits:
+   read bytes → `decode('gbk')` to verify → `bytes.replace` → write CRLF.
+   A PreToolUse guard (`scripts/hooks/guard_file_edit.py`, registered in
+   `.claude/settings.json`) enforces this and fails open.
+2. `.bat`/`.cmd` line endings MUST be CRLF. LF + `if (...)` blocks have
+   flash-closed twice (2026-08). After any bat edit verify: valid decode in its
+   encoding, CRLF-only endings, no `\xef\xbf\xbd`.
+3. `git show` restores bats with LF endings (autocrlf converts on checkout
+   only) — always re-apply CRLF after restoring from git.
+
+Known incident (2026-10-01): Edit on the GBK `MyClaw-Restart.bat` corrupted its
+Chinese into U+FFFD → user-facing mojibake + restart window flash-close.
+

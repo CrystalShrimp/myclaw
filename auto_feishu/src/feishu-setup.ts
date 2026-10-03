@@ -145,6 +145,58 @@ const PERSONAL_MODE =
   (process.env.FEISHU_DEPLOY_MODE || "").trim().toLowerCase() === "personal";
 const DEAD_PROXY_PATTERN = /^(?:https?:\/\/)?127\.0\.0\.1:6984\/?$/i;
 
+const RESERVED_COMMANDS = new Set([
+  "reset", "help", "stop", "clear", "cd", "session", "mode", "model", "effort", "status", "diff"
+]);
+
+export function validateBotName(name: string): { valid: boolean; reason?: string } {
+  if (!name || !name.trim()) {
+    return { valid: false, reason: "名称不能为空" };
+  }
+  const trimmed = name.trim();
+
+  // 1. 检查任何空白字符（半角空格、全角空格、制表符、换行符）
+  if (/\s/.test(name) || name.includes("\u3000")) {
+    return { valid: false, reason: "名称严禁包含任何空格或换行（会导致群聊 @ 识别失效）" };
+  }
+
+  // 2. 检查长度限制（建议 2~20 个字符）
+  if (trimmed.length < 2) {
+    return { valid: false, reason: "名称过短，至少需要 2 个字符" };
+  }
+  if (trimmed.length > 20) {
+    return { valid: false, reason: "名称过长，建议在 20 个字符以内（避免移动端群聊 @ 被截断）" };
+  }
+
+  // 3. 检查 @ 符号
+  if (trimmed.includes("@") || trimmed.includes("＠")) {
+    return { valid: false, reason: "名称不能包含「@」符号" };
+  }
+
+  // 4. 检查斜杠与反斜杠
+  if (trimmed.includes("/") || trimmed.includes("\\")) {
+    return { valid: false, reason: "名称不能包含斜杠「/」或反斜杠「\\」（与系统指令冲突）" };
+  }
+
+  // 5. 检查敏感标点与特殊符号
+  const illegalCharsPattern = /[:;,'"`|<>&\uff01-\uff0f\uff1a-\uff20]/;
+  if (illegalCharsPattern.test(trimmed)) {
+    return { valid: false, reason: "名称不能包含特殊标点符号（如冒号、逗号、引号、尖括号等）" };
+  }
+
+  // 6. 检查系统保留指令
+  if (RESERVED_COMMANDS.has(trimmed.toLowerCase())) {
+    return { valid: false, reason: `「${trimmed}」为系统内置保留指令，不能作为机器人名称` };
+  }
+
+  // 7. 合法字符集合验证：允许中文、英文字母、数字、下划线、短横线
+  if (!/^[\w\u4e00-\u9fa5-]+$/.test(trimmed)) {
+    return { valid: false, reason: "名称仅支持中文、英文字母、数字、下划线「_」或短横线「-」" };
+  }
+
+  return { valid: true };
+}
+
 function clearDeadProxyEnvironment(logger: Logger): void {
   const proxyKeys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"];
   const cleared: string[] = [];
@@ -339,6 +391,19 @@ async function createInitialResult(config: LoadedConfig): Promise<ResultState> {
 async function loadConfig(rootDir: string): Promise<LoadedConfig> {
   const configPath = path.join(rootDir, "config.json");
   const raw = JSON.parse(await readFile(configPath, "utf8")) as RawConfig;
+
+  if (raw.botName) {
+    const checkBot = validateBotName(raw.botName);
+    if (!checkBot.valid) {
+      throw new Error(`config.json 中的 botName (「${raw.botName}」) 不合法: ${checkBot.reason}。请修改配置文件。`);
+    }
+  }
+  if (raw.appName) {
+    const checkApp = validateBotName(raw.appName);
+    if (!checkApp.valid) {
+      throw new Error(`config.json 中的 appName (「${raw.appName}」) 不合法: ${checkApp.reason}。请修改配置文件。`);
+    }
+  }
 
   return {
     ...raw,
@@ -1750,22 +1815,43 @@ async function createOrOpenApp(ctx: StepContext): Promise<void> {
   ctx.logger.info("即将进入创建全新企业自建应用流程...");
   if (isNonInteractivePrompt()) {
     if (APP_NAME_ARG) {
+      const check = validateBotName(APP_NAME_ARG);
+      if (!check.valid) {
+        throw new Error(`--app-name 参数「${APP_NAME_ARG}」不合法: ${check.reason}`);
+      }
       ctx.config.appName = APP_NAME_ARG;
       ctx.config.botName = APP_NAME_ARG;
       ctx.logger.info(`非交互模式：应用名称采用 --app-name 参数："${ctx.config.appName}"`);
     }
   } else {
-    const customName = (await promptText(
-      ctx.prompt,
-      `请输入新应用的名称 (直接回车默认 "${ctx.config.appName}"): `
-    )).trim();
-    if (customName) {
-      ctx.config.appName = customName;
-      ctx.config.botName = customName;
-      ctx.logger.info(`已设置新应用名称为：“${ctx.config.appName}”`);
-    } else {
-      ctx.logger.info(`采用默认应用名称：“${ctx.config.appName}”`);
+    ctx.logger.info(">> 命名规则：严禁包含空格（否则群聊 @ 识别失效），建议使用 2-20 位中文、英文、数字、下划线或短横线。");
+    let chosenName = ctx.config.appName;
+    while (true) {
+      const inputName = (await promptText(
+        ctx.prompt,
+        `请输入新应用的名称 (不可含空格，直接回车默认 "${ctx.config.appName}"): `
+      )).trim();
+      if (!inputName) {
+        chosenName = ctx.config.appName;
+        const check = validateBotName(chosenName);
+        if (!check.valid) {
+          ctx.logger.error(`默认应用名称「${chosenName}」不合法: ${check.reason}，请手动输入合法名称。`);
+          continue;
+        }
+        ctx.logger.info(`采用默认应用名称：“${chosenName}”`);
+        break;
+      }
+      const check = validateBotName(inputName);
+      if (!check.valid) {
+        ctx.logger.warn(`[!] 输入的名称不符合规范: ${check.reason}，请重新输入。`);
+        continue;
+      }
+      chosenName = inputName;
+      ctx.logger.info(`已设置新应用名称为：“${chosenName}”`);
+      break;
     }
+    ctx.config.appName = chosenName;
+    ctx.config.botName = chosenName;
   }
   ctx.result.appName = ctx.config.appName;
   ctx.result.appId = null;
@@ -2042,6 +2128,8 @@ async function waitForLocalClawOnline(ctx: StepContext): Promise<void> {
           windowsHide: true
         });
         child.unref();
+        // 子进程已在 spawn 时复制 fd；父进程必须显式关闭句柄，留给 GC 兜底会抛 ERR_INVALID_STATE
+        if (bootLog) await bootLog.close().catch(() => undefined);
         started = true;
         ctx.logger.info("本地 claw 服务未运行，已尝试启动：" + ctx.config.localServiceRootDir);
         ctx.logger.info("服务启动日志（若一直未上线请查看）：" + bootLogPath);
@@ -3281,9 +3369,7 @@ async function main(): Promise<void> {
 
     ctx.result.status = "completed";
     await persistResult(config, ctx.result);
-    logger.info(`结果文件已写入：${config.resultPath}`);
-    logger.info(`App Secret 已掩码显示：${ctx.result.maskedSecret ?? "未获取"}`);
-    logger.info("交付完成：.env 已写入飞书凭据，结果 JSON 未保存 Secret，可启动本地 claw 并在飞书测试机器人。");
+    logger.info("交付完成：飞书凭据已写入 .env，可在飞书测试机器人。");
   } catch (error) {
     if (error instanceof AutomationStepError) {
       output.write(`\n失败步骤：${error.step}\n`);
@@ -3521,9 +3607,7 @@ async function mainV2(): Promise<void> {
 
     ctx.result.status = "completed";
     await persistResult(config, ctx.result);
-    logger.info(`结果文件已写入：${config.resultPath}`);
-    logger.info(`App Secret 脱敏预览：${ctx.result.maskedSecret ?? "未抓取"}`);
-    logger.info("交付完成：结果 JSON 未保存 Secret，可在飞书测试机器人。");
+    logger.info("交付完成：飞书配置完成，可在飞书测试机器人。");
   } catch (error) {
     if (error instanceof AutomationStepError) {
       output.write(`\n步骤失败：${error.step}\n`);
@@ -3548,6 +3632,8 @@ async function mainV2(): Promise<void> {
   }
 }
 
-mainV2().catch(() => {
-  process.exitCode = 1;
-});
+if (typeof require !== "undefined" && require.main === module) {
+  mainV2().catch(() => {
+    process.exitCode = 1;
+  });
+}

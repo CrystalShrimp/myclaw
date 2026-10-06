@@ -233,7 +233,14 @@ def _claude_config_path() -> Path | None:
         p = Path(raw).expanduser().resolve()
         if not p.exists() or not p.is_dir():
             continue
-        if p.name.lower() == "projects" and (p.parent / "projects").is_dir():
+        # 仅当父目录本身长得像 Claude 配置主目录（名为 .claude，或含 history.jsonl）
+        # 才向上取父目录。此前只看"目录名=projects 且父目录下有 projects"——任何
+        # 恰好叫 projects 的普通工作目录都会把父目录误判成 claude home
+        # （2026-10-06 mac 事故：CLAUDE_SESSION_DIR=/Users/mac/projects 导致
+        #   /session 永远为空、裸 /cd 项目列表失真）。
+        if p.name.lower() == "projects" and (
+            p.parent.name.lower() == ".claude" or (p.parent / "history.jsonl").is_file()
+        ):
             return p.parent
         if _is_claude_storage_dir(p):
             return p

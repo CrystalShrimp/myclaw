@@ -10,6 +10,7 @@ import asyncio
 import inspect
 import logging
 import re
+import sys
 import uuid
 from pathlib import Path
 
@@ -507,7 +508,16 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
         new_path = parts[1].strip()
         p = Path(new_path)
         if not p.is_absolute():
-            await reply.text("错误：请使用绝对路径，例如 `/cd D:\\projects\\myapp`")
+            # 2026-10-06：示例文案曾是 Windows 风格，把 mac 用户带偏（漏开头 / 还照抄了反斜杠）。
+            # 现按平台给示例，并对"疑似漏掉开头 /"的 mac 输入给出针对性提示。
+            if sys.platform != "win32" and not new_path.startswith("/"):
+                await reply.text(
+                    f"❌ `{new_path}` 是相对路径。macOS/Linux 绝对路径以 `/` 开头，"
+                    f"你是不是想切换到 `/{new_path}`？确认请发送 `/cd /{new_path}`"
+                )
+                return
+            example = "/cd /Users/mac/projects/myapp" if sys.platform != "win32" else "/cd D:\\projects\\myapp"
+            await reply.text(f"错误：请使用绝对路径，例如 `{example}`")
             return
 
         if not p.exists():

@@ -231,6 +231,29 @@ def confirm_directories():
         "[2] Claude Code 历史会话目录：读取电脑端的历史会话",
         rec_sess,
     )
+
+    # 会话目录必须是 Claude 存储目录（~/.claude/projects 形态）。误指向普通工作
+    # 目录（2026-10-06 mac 事故：被设为 /Users/mac/projects）会让 /session 列表
+    # 与终端 claude -r 显示分家。这里校验并强烈建议回退推荐值。
+    def _looks_like_session_store(p: Path) -> bool:
+        pl = p.expanduser().resolve()
+        if pl.name.lower() == ".claude":
+            return True
+        if pl.name.lower() == "projects" and (pl.parent.name.lower() == ".claude" or (pl.parent / "history.jsonl").is_file()):
+            return True
+        return (pl / "history.jsonl").is_file() or (pl / "projects").is_dir()
+
+    if not _looks_like_session_store(final_sess):
+        print(f"[!] 警告：{final_sess} 不是 Claude Code 的会话存储目录（通常是 ~/.claude/projects）。")
+        print("    误指向普通工作目录会导致 /session 列表与终端 claude -r 显示分家。")
+        try:
+            keep = input(f"[?] 是否改用推荐值 {rec_sess}？[Y/N] (直接回车 = 改用推荐): ").strip().lower()
+        except EOFError:
+            keep = ""
+        if keep not in ("n", "no"):
+            final_sess = rec_sess
+            print(f"[OK] 已改用会话存储目录: {final_sess}")
+
     try:
         final_sess.mkdir(parents=True, exist_ok=True)
         print(f"[OK] 历史会话目录已就绪: {final_sess}")

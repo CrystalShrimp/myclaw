@@ -95,6 +95,7 @@ from app.channel.registry import get_channel
 from app.models.schemas import AgentResult, ToolCallRecord
 from app.audit.logger import audit_logger
 from app.profiles import load_profile_env, MYCLAW_ROOT, CONFIG_DIR
+from app.agent.auto_compact import PROMPT_TOO_LONG, TOO_LONG_GUIDANCE, find_transcript, summarize_tail
 
 logger = logging.getLogger("myclaw.cli_loop")
 
@@ -254,6 +255,8 @@ class ClaudeCLILoop:
     def __init__(self) -> None:
         self._processes: dict[str, asyncio.subprocess.Process] = {}
         self._stdin_writers: dict[str, asyncio.StreamWriter] = {}
+        # open_id -> approval_mode (当前运行进程启动时的 mode 快照)
+        self._process_modes: dict[str, str] = {}
         # 会话 key -> 回复目标（平台+群/私路由）。崩溃告警等后续发送用它路由。
         self._targets: dict[str, UserTarget] = {}
         # 会话 key -> 真实 open_id。key 是"群=chat_id / 私聊=p:open_id"（私聊与
@@ -319,6 +322,62 @@ class ClaudeCLILoop:
         target: UserTarget | None = None,
         effort: str = "",
     ) -> AgentResult:
+        """公共入口：超窗终态自动压缩并在新会话重放（详见 app/agent/auto_compact.py）。
+
+        仅对 resume/continue 的执行生效（新会话不可能带着超量历史），
+        且只重试一层——重放调用本身传 claude_session_id=None。
+        """
+        result = await self._send_and_wait_once(
+            prompt, open_id, workspace, model, approval_mode, profile_name,
+            claude_session_id, resume_session_id, target, effort,
+        )
+        if (claude_session_id or resume_session_id) and PROMPT_TOO_LONG.search(result.text or ""):
+            old_sid = (claude_session_id or resume_session_id or "")
+            logger.warning("会话 %s… 上下文超窗（Prompt is too long），尝试自动压缩续接", old_sid[:8])
+            summary = None
+            transcript = find_transcript(old_sid)
+            if transcript is not None:
+                summary = await summarize_tail(
+                    transcript,
+                    cli_path=settings.claude_cli_path,
+                    model=model or settings.claude_default_model,
+                    env=_build_env(workspace, profile_name),
+                    workspace=workspace,
+                )
+            if summary:
+                logger.info("自动压缩完成（摘要 %d 字符），新会话重放用户请求", len(summary))
+                retry_prompt = (
+                    "【背景摘要（自动压缩自上一会话；原会话超出模型上下文窗口）】\n"
+                    f"{summary}\n\n【用户最新请求】\n{prompt}\n\n"
+                    "请基于以上背景继续执行用户请求。"
+                )
+                result2 = await self._send_and_wait_once(
+                    retry_prompt, open_id, workspace, model, approval_mode,
+                    profile_name, None, None, target, effort,
+                )
+                sid8 = (result2.session_id or "")[:8]
+                result2.text = (
+                    f"⚠️ 原会话超出模型上下文窗口，已自动压缩为摘要并在新会话继续"
+                    f"（新会话 {sid8}）。\n\n" + (result2.text or "")
+                )
+                return result2
+            logger.warning("自动压缩未成功，返回指引文本")
+            result.text = (result.text or "") + TOO_LONG_GUIDANCE
+        return result
+
+    async def _send_and_wait_once(
+        self,
+        prompt: str,
+        open_id: str,
+        workspace: str,
+        model: str | None = None,
+        approval_mode: str = "m",
+        profile_name: str = "",
+        claude_session_id: str | None = None,
+        resume_session_id: str | None = None,
+        target: UserTarget | None = None,
+        effort: str = "",
+    ) -> AgentResult:
         """Send a prompt to the user's interactive Claude process.
 
         *open_id* 在这里是"会话 key"（群=g:chat_id:open_id / 私聊=p:open_id），
@@ -337,6 +396,15 @@ class ClaudeCLILoop:
         chosen = model or settings.claude_default_model
 
         async with lock:
+            # 如果当前运行进程的 approval_mode 与本次请求的 approval_mode 不一致，
+            # 必须销毁旧进程以使新模式生效（特别是 l 模式有 --permission-mode bypassPermissions 启动参数）
+            if self.is_running(open_id) and self._process_modes.get(open_id) != approval_mode:
+                logger.info(
+                    "Approval mode changed for %s (%s -> %s), restarting process",
+                    open_id, self._process_modes.get(open_id), approval_mode,
+                )
+                await self._teardown_previous(open_id)
+
             # Start on first use or after an actual process failure. A healthy
             # stream-json process remains attached to the Feishu user so
             # subsequent messages stay in the same native Claude session.
@@ -346,6 +414,11 @@ class ClaudeCLILoop:
                     open_id, workspace, model, approval_mode, profile_name,
                     claude_session_id, resume_session_id, effort=effort,
                 )
+
+            # 保持内存 session_registry 中的 approval_mode 快照与当前模式严格一致
+            claude_sid = self.get_session_id_for_user(open_id)
+            if claude_sid and claude_sid in session_registry:
+                session_registry[claude_sid]["approval_mode"] = approval_mode
 
             writer = self._stdin_writers.get(open_id)
             if not writer or writer.is_closing():
@@ -553,6 +626,7 @@ class ClaudeCLILoop:
         )
         self._processes[open_id] = proc
         self._stdin_writers[open_id] = proc.stdin  # type: ignore[assignment]
+        self._process_modes[open_id] = approval_mode
         logger.warning(
             "Interactive Claude CLI started: open_id=%s workspace=%s model=%s effort=%s pid=%s",
             open_id, workspace, chosen, effort or "(default)", proc.pid,
@@ -892,6 +966,7 @@ class ClaudeCLILoop:
         """Clean up all state for a user after process exit or error."""
         self._processes.pop(open_id, None)
         self._stdin_writers.pop(open_id, None)
+        self._process_modes.pop(open_id, None)
         self._reader_tasks.pop(open_id, None)
         # Clean up session_registry entries for this user
         # （registry 存真实 open_id，入参是会话 key，两边都清）

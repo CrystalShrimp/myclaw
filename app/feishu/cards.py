@@ -181,8 +181,7 @@ def build_profile_selection_card(
     for name, info in profiles.items():
         marker = " ← 当前" if name == active_profile else ""
         label = info.get("label", name)
-        model = info.get("model", "")
-        profile_lines.append(f"- **{label}** ({name}) — 模型: {model}{marker}")
+        profile_lines.append(f"- **{label}**{marker}")
 
     profile_text = "\n".join(profile_lines) if profile_lines else "未发现任何 profile 配置"
 

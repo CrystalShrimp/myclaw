@@ -161,6 +161,8 @@ def infer_claude_session_dir() -> Path:
 
 def confirm_directories():
     """【Step 2/4】初始运行目录与 Claude Code 历史会话目录确认。"""
+    from config.settings import cross_platform_path
+
     print("\n" + "=" * 60)
     print("   【Step 2/4】初始运行目录与 Claude Code 历史会话目录确认")
     print("=" * 60)
@@ -191,6 +193,9 @@ def confirm_directories():
                 if not custom:
                     print("[!] 路径不能为空，请重新输入。")
                     continue
+                if cross_platform_path(custom):
+                    print("[!] 这是其他平台的路径格式，请输入本机路径。")
+                    continue
                 try:
                     final = Path(custom).expanduser().resolve()
                     break
@@ -201,6 +206,9 @@ def confirm_directories():
 
     # 1. 初始运行目录：初始任务临时在此运行，后续可用/cd 命令切换至目标目录
     configured = get_env_value("DEFAULT_WORKSPACE")
+    if configured and cross_platform_path(configured):
+        print(f"[!] .env 中的 DEFAULT_WORKSPACE（{configured}）是其他平台的路径，已忽略并改用本机推荐值。")
+        configured = ""
     rec_ws = Path(configured).expanduser() if configured else get_recommended_workspace()
     final_ws = ask_path(
         "[1] 初始运行目录：初始任务临时在此运行，后续可用/cd 命令切换至目标目录",
@@ -215,6 +223,9 @@ def confirm_directories():
 
     # 2. Claude Code 历史会话目录：读取电脑端的历史会话
     sess_configured = get_env_value("CLAUDE_SESSION_DIR")
+    if sess_configured and cross_platform_path(sess_configured):
+        print(f"[!] .env 中的 CLAUDE_SESSION_DIR（{sess_configured}）是其他平台的路径，已忽略并改用本机推荐值。")
+        sess_configured = ""
     rec_sess = Path(sess_configured).expanduser() if sess_configured else infer_claude_session_dir()
     final_sess = ask_path(
         "[2] Claude Code 历史会话目录：读取电脑端的历史会话",

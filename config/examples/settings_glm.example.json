@@ -5,14 +5,14 @@
     "API_TIMEOUT_MS": "3000000",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-4.5-air",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5-turbo",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.2"
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-5.3-flash",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.2",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.3"
   },
   "permissions": {
     "allow": ["Bash(*)", "Write(*)", "Edit(*)", "NotebookEdit(*)", "Read(*)", "Glob(*)", "Grep(*)", "WebSearch", "WebFetch"],
     "deny": []
   },
-  "model": "opus[1m]",
+  "model": "opus",
   "skipDangerousModePermissionPrompt": true
 }

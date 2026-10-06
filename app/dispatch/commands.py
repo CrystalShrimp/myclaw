@@ -684,7 +684,8 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
         return
 
     # --- /new: reset native session and runtime preferences ---
-    if text_lower == "/new":
+    if text_lower == "/new" or text_lower.startswith("/new ") or text_lower.startswith("/new\n"):
+        new_task = "" if text_lower == "/new" else text[len("/new"):].strip()
         await claude_cli_loop.cancel_and_wait(skey_for(target))
         session = session_manager.reset_user_session(skey_for(target))
 
@@ -695,6 +696,13 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
             session_manager.save_session(session)
         except Exception as e:
             logger.warning("Session sync init failed: %s", e)
+
+        # /new <任务描述>：重置后直接把剩余文字作为新会话首条任务执行
+        if new_task:
+            preview = new_task if len(new_task) <= 60 else new_task[:57] + "..."
+            await reply.text(f"✨ **新会话已就绪**，开始执行：`{preview}`")
+            await _run_claude(new_task, target, session)
+            return
 
         pref = preferences_manager.get(open_id)
         profiles = discover_profiles()
@@ -936,6 +944,15 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
     await _run_claude(text, target)
 
 
+# 命令层已实现的指令名（供无效斜杠输入的提示区分“用法错误”与“未识别”）。
+# 与上方各 `text_lower ==` / `startswith` 分支保持同步。
+_KNOWN_COMMANDS = frozenset({
+    "/help", "/status", "/stop", "/new", "/clean", "/compact", "/continue",
+    "/notes", "/provider", "/model", "/mode", "/effort", "/pwd", "/file",
+    "/cd", "/session", "/resume", "/mem", "/balance", "/sh",
+})
+
+
 async def _run_claude(
     prompt: str,
     target: UserTarget,
@@ -954,6 +971,27 @@ async def _run_claude(
     is_group = target.is_group
     audit_logger.log_command_received(open_id, prompt, "started")
     reply = ReplyContext(target)
+
+    # 拦截“以 / 开头但未被命令层处理”的输入：原样转发会被 CLI 当斜杠命令吞掉，
+    # 0 次模型调用静默返回 "(no content)"（2026-10-06 实测 /new xxx 整条被吞）。
+    # 内部合成调用（skip_classify=True，如 /compact 链路）不受此拦截影响。
+    if not skip_classify:
+        stripped_prompt = prompt.lstrip()
+        if stripped_prompt.startswith("/"):
+            parts = stripped_prompt.split()
+            head = parts[0] if parts else "/"
+            if head.lower() in _KNOWN_COMMANDS:
+                await reply.text(
+                    f"⚠️ 指令 `{head}` 不支持这种用法（多余的参数不会被识别）。\n"
+                    f"发送 `/help` 查看该指令的正确用法。"
+                )
+            else:
+                await reply.text(
+                    f"⚠️ 未识别的指令 `{head}`，已拦截未执行（原样转发只会得到空结果）。\n"
+                    f"• 发送 `/help` 查看全部可用指令\n"
+                    f"• 如需发送以 / 开头的普通内容（如路径），请在消息最前面加一个空格"
+                )
+            return
     try:
         if not session:
             session = session_manager.get_user_session(skey_for(target))

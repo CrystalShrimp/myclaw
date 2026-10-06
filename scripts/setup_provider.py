@@ -211,7 +211,7 @@ def configure_custom() -> bool:
             "ANTHROPIC_DEFAULT_SONNET_MODEL": m2,
             "ANTHROPIC_DEFAULT_OPUS_MODEL": m3,
         },
-        "model": "opus[1m]",
+        "model": "opus",
     }
     if label:
         data["label"] = label

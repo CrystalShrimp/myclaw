@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from pathlib import Path
 
@@ -225,26 +226,32 @@ def _is_high_risk(tool_name: str, arguments: dict | None = None) -> bool:
 
     if tool_name == "Bash" and arguments:
         cmd = arguments.get("command", "").strip()
-        # Extract first command in a chain
-        cmd_first = cmd.split(";")[0].split("&&")[0].split("|")[0].strip()
-        cmd_lower = cmd_first.lower()
 
-        # Check high-risk keywords first
+        # 黑名单全链扫描：关键词命中命令串任意位置（含 ; && || | 换行后的后续段、
+        # $() 内联与重定向）即高风险。（2026-10-03 修复：此前只判链条第一段，
+        # `echo ok && rm -rf x` 会因 echo 在白名单而让后续黑名单词逃逸。）
+        cmd_lower = cmd.lower()
         for kw in _HIGH_RISK_KEYWORDS:
             if kw in cmd_lower:
                 return True
 
-        # Check safe commands
-        for safe in _SAFE_COMMAND_PATTERNS:
-            if cmd_lower == safe or cmd_lower.startswith(safe + " ") or cmd_lower.startswith(safe + "\t"):
-                return False
-
-        # Also allow: python -c "..." (inline scripts, usually for checks)
-        if cmd_lower.startswith("python -c ") or cmd_lower.startswith("python3 -c "):
-            return False
-
-        # Unknown command → high-risk by default
-        return True
+        # 白名单按段校验：链条里每一段都必须是已知安全命令；任一段未知 → 高风险
+        segments = [s.strip() for s in re.split(r";|&&|\|\||\||\n", cmd) if s.strip()]
+        for seg in segments:
+            seg_lower = seg.lower()
+            if any(
+                seg_lower == safe
+                or seg_lower.startswith(safe + " ")
+                or seg_lower.startswith(safe + "\t")
+                for safe in _SAFE_COMMAND_PATTERNS
+            ):
+                continue
+            # Also allow: python -c "..." (inline scripts, usually for checks)
+            if seg_lower.startswith("python -c ") or seg_lower.startswith("python3 -c "):
+                continue
+            # Unknown segment → high-risk by default
+            return True
+        return False
 
     # Non-Bash, non-Write/Edit tools: low-risk
     return False

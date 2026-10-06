@@ -26,6 +26,18 @@ logger = logging.getLogger("myclaw.session_sync")
 
 
 def _claude_home() -> Path:
+    """与 dispatch.helpers._claude_config_path 同口径：跟随 CLAUDE_DATA_DIR / CLAUDE_SESSION_DIR。
+
+    此前硬编码 ~/.claude——客户配置了非默认根目录时，/new 的 born 会话写入
+    与 /session 的列表读取会分家（2026-10-06 排查）。延迟导入避免模块级循环。
+    """
+    try:
+        from app.dispatch.helpers import _claude_config_path
+        p = _claude_config_path()
+        if p:
+            return Path(p)
+    except Exception:
+        pass
     return (Path.home() / ".claude").resolve()
 
 
@@ -282,6 +294,11 @@ def detect_cli_session_update(workspace: str, current_session_id: str | None) ->
                                 break
                 except Exception:
                     continue
+            # 无实质文本的会话（/new 生成的 born 空壳、仅命令标记的转录）不作为
+            # 对齐目标：它们的 mtime 最新，会赢过真实会话把用户绑到空壳上
+            # （2026-10-06 事故：/new 后被"对齐"到 born 空会话，resume 又落到全新 id）。
+            if not last_text:
+                continue
             candidates.append((mtime, sid, last_text))
         except Exception:
             continue

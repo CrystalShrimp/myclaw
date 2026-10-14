@@ -1,0 +1,26 @@
+
+> myclaw-wecom-setup@1.0.0 wecom:setup
+> tsx src/wecom-setup.ts --public --bot-name mcrepro3
+
+[2026-10-14 20:58:54.079] [INFO] 正在确认管理后台登录状态（目标模式：公用）...
+[2026-10-14 20:58:55.272] [INFO] 请在打开的浏览器中用企业微信 App 扫码登录管理后台；登录成功后脚本自动继续。
+[2026-10-14 20:59:16.341] [INFO] 扫码登录成功，页面特征：应用管理
+[2026-10-14 20:59:16.341] [INFO] 正在读取「机器人管理」列表...
+[2026-10-14 20:59:19.436] [INFO] [scope] 可见范围：部门 1，成员 1，标签 0
+[2026-10-14 20:59:20.295] [INFO] [scope] 可见范围：部门 0，成员 1，标签 0
+[2026-10-14 20:59:21.127] [INFO] [scope] 可见范围：部门 1，成员 1，标签 0
+[2026-10-14 20:59:21.360] [INFO] 检测到 4 个机器人（mcrepro2、co_mac_personal、win_public、myclaw）但没有匹配「mcrepro3」的，默认创建新机器人。
+[2026-10-14 20:59:21.360] [INFO] 未选择已有机器人，进入创建流程...
+[2026-10-14 20:59:35.152] [INFO] 已切换到 API 模式。
+[2026-10-14 20:59:42.578] [INFO] 已点击 Secret「点击获取」（第 1 次），等待生成...
+[2026-10-14 20:59:43.658] [INFO] Secret 已生成（保存拦截解除）。
+[2026-10-14 20:59:48.307] [WARN] 下拉列表中未找到「多人使用」选项，保持当前默认状态。
+[2026-10-14 20:59:48.318] [WARN] 公用模式：未见可见范围「添加」按钮，未能自动核对/补全（保存后将复核）。
+[2026-10-14 20:59:49.591] [INFO] 已点击提交按钮：「保存」
+[2026-10-14 20:59:50.798] [INFO] 保存点击后 URL：https://work.weixin.qq.com/wework_admin/frame#/aiHelper/create；页面提示：换一个 | 上传
+[2026-10-14 21:00:02.808] [INFO] [scope] 可见范围：部门 1，成员 1，标签 0
+[2026-10-14 21:00:03.637] [INFO] [scope] 可见范围：部门 0，成员 1，标签 0
+[2026-10-14 21:00:04.426] [INFO] [scope] 可见范围：部门 1，成员 1，标签 0
+[2026-10-14 21:00:10.694] [ERROR] 创建机器人 失败：保存后未在机器人列表中确认到「mcrepro3」（当前列表：mcrepro2、co_mac_personal、win_public、myclaw）。换一个 | 上传。保存相关接口响应：[HTTP 200] …com/ai/monoApi/robot/workBuddy/getWorkBuddyCardInfo?lang=zh_CN&ajax=1&f=json&random=643563 {"data":{"installed":false,"trialStatus":"not_trialing","templateEnableStatus":"unknown","usableMemberCount":0}} ⟂ [HTTP 200] …xin.qq.com/ai/monoApi/robot/crudAcq/mngGetAibotList?lang=zh_CN&ajax=1&f=json&random=721379 {"data":{"aibot_list":[{"aibotid":"33776998321284337","name":"mcrepro2","headurl":"https://wwcdn.weixin.qq.com/node/wework/images/avatar_26.7q7275y4.png","robot_config":{"visiable_range":{"visible_par ⟂ [HTTP 200] …in.qq.com/ai/monoApi/robot/crudAcq/getAIRobotDetail?lang=zh_CN&ajax=1&f=json&random=912127 {"data":{"aibot_profile":{"aibotid":"33776998321284337","name":"mcrepro2","headurl":"https://wwcdn.weixin.qq.com/node/wework/images/avatar_26.7q7275y4.png","robot_config":{"visiable_range":{"visible_p ⟂ [HTTP 200] …in.qq.com/ai/monoApi/robot/crudAcq/getAIRobotDetail?lang=zh_CN&ajax=1&f=json&random=341804 {"data":{"aibot_profile":{"aibotid":"33777000578282049","name":"co_mac_personal","headurl":"https://wwcdn.weixin.qq.com/node/wework/images/avatar_26.7q7275y4.png","robot_config":{"visiable_range":{"vi ⟂ [HTTP 200] …in.qq.com/ai/monoApi/robot/crudAcq/getAIRobotDetail?lang=zh_CN&ajax=1&f=json&random=724779 {"data":{"aibot_profile":{"aibotid":"33777000578281775","name":"win_public","headurl":"https://wwcdn.weixin.qq.com/node/wework/images/avatar_24.o7tc6trc.png","robot_config":{"visiable_range":{"visible
+[2026-10-14 21:00:10.694] [ERROR] 排错资料：D:\ForRunning\ForDev\myclaw\auto_wecom\artifacts\screenshots\2026-10-14T21-00-06-298Z-创建机器人.png | D:\ForRunning\ForDev\myclaw\auto_wecom\artifacts\html\2026-10-14T21-00-06-298Z-创建机器人.html
+[2026-10-14 21:00:11.279] [ERROR] Error: 创建机器人：保存后未在机器人列表中确认到「mcrepro3」（当前列表：mcrepro2、co_mac_personal、win_public、myclaw）。换一个 | 上传。保存相关接口响应：[HTTP 200] …com/ai/monoApi/robot/workBuddy/getWorkBuddyCardInfo?lang=zh_CN&ajax=1&f=json&random=643563 {"data":{"installed":false,"trialStatus":"not_trialing","templateEnableStatus":"unknown","usableMemberCount":0}} ⟂ [HTTP 200] …xin.qq.com/ai/monoApi/robot/crudAcq/mngGetAibotList?lang=zh_CN&ajax=1&f=json&random=721379 {"data":{"aibot_list":[{"aibotid":"33776998321284337","name":"mcrepro2","headurl":"https://wwcdn.weixin.qq.com/node/wework/images/avatar_26.7q7275y4.png","robot_config":{"visiable_range":{"visible_par ⟂ [HTTP 200] …in.qq.com/ai/monoApi/robot/crudAcq/getAIRobotDetail?lang=zh_CN&ajax=1&f=json&random=912127 {"data":{"aibot_profile":{"aibotid":"33776998321284337","name":"mcrepro2","headurl":"https://wwcdn.weixin.qq.com/node/wework/images/avatar_26.7q7275y4.png","robot_config":{"visiable_range":{"visible_p ⟂ [HTTP 200] …in.qq.com/ai/monoApi/robot/crudAcq/getAIRobotDetail?lang=zh_CN&ajax=1&f=json&random=341804 {"data":{"aibot_profile":{"aibotid":"33777000578282049","name":"co_mac_personal","headurl":"https://wwcdn.weixin.qq.com/node/wework/images/avatar_26.7q7275y4.png","robot_config":{"visiable_range":{"vi ⟂ [HTTP 200] …in.qq.com/ai/monoApi/robot/crudAcq/getAIRobotDetail?lang=zh_CN&ajax=1&f=json&random=724779 {"data":{"aibot_profile":{"aibotid":"33777000578281775","name":"win_public","headurl":"https://wwcdn.weixin.qq.com/node/wework/images/avatar_24.o7tc6trc.png","robot_config":{"visiable_range":{"visible

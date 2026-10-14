@@ -1,0 +1,39 @@
+
+> myclaw-wecom-setup@1.0.0 wecom:setup
+> tsx src/wecom-setup.ts --public --bot-name mcrepro --debug
+
+[2026-10-14 20:39:25.852] [INFO] 正在确认管理后台登录状态（目标模式：公用）...
+[2026-10-14 20:39:26.827] [INFO] 请在打开的浏览器中用企业微信 App 扫码登录管理后台；登录成功后脚本自动继续。
+[2026-10-14 20:39:59.956] [INFO] 扫码登录成功，页面特征：应用管理
+[2026-10-14 20:39:59.957] [INFO] 正在读取「机器人管理」列表...
+[2026-10-14 20:40:01.532] [INFO] 已接受 Cookie 通知（Accept all + Save，关闭首用遮罩）。
+[2026-10-14 20:40:04.192] [INFO] [scope] 可见范围：部门 0，成员 1，标签 0
+[2026-10-14 20:40:04.192] [INFO] [scope] 原始返回：{"visible_partyids":[],"visible_vids":[{"id":"1688857349899845","vid":"1688857349899845","name":"锟","acctid":"Kun","parentid":"1688857349899848","party_list":["1688857349899848"],"delete_stat":0}],"visible_tagids":[]}
+[2026-10-14 20:40:05.100] [INFO] [scope] 可见范围：部门 0，成员 1，标签 0
+[2026-10-14 20:40:05.100] [INFO] [scope] 原始返回：{"visible_partyids":[],"visible_vids":[{"id":"1688857349899845","vid":"1688857349899845","name":"锟","acctid":"Kun","parentid":"1688857349899848","party_list":["1688857349899848"],"delete_stat":0}],"visible_tagids":[]}
+[2026-10-14 20:40:05.961] [INFO] [scope] 可见范围：部门 1，成员 1，标签 0
+[2026-10-14 20:40:05.961] [INFO] [scope] 原始返回：{"visible_partyids":[{"id":"1688857349899848","partyid":"1688857349899848","name":"锟的团队","parentid":0,"openapi_partyid":"1"}],"visible_vids":[{"id":"1688857349899845","vid":"1688857349899845","name":"锟","acctid":"Kun","parentid":"1688857349899848","party_list":["1688857349899848"],"delete_stat":0}],"visible_tagids":[]}
+[2026-10-14 20:40:06.582] [INFO] 检测到 4 个企业创建的机器人，自动选用：mcrepro
+[2026-10-14 20:40:06.582] [INFO] 正在打开机器人「mcrepro」详情页...
+[2026-10-14 20:40:14.519] [INFO] [scope] 可见范围：部门 0，成员 1，标签 0
+[2026-10-14 20:40:14.519] [INFO] [scope] 原始返回：{"visible_partyids":[],"visible_vids":[{"id":"1688857349899845","vid":"1688857349899845","name":"锟","acctid":"Kun","parentid":"1688857349899848","party_list":["1688857349899848"],"delete_stat":0}],"visible_tagids":[]}
+[2026-10-14 20:40:16.193] [WARN] 可见范围未覆盖全企业（部门 0 / 成员 1，无组织节点），进入编辑补全。
+[2026-10-14 20:40:16.199] [INFO] 正在进入编辑页同步机器人名称（-> mcrepro）与使用方式（-> 多人使用）...
+[2026-10-14 20:40:18.043] [INFO] [scope] 可见范围：部门 0，成员 1，标签 0
+[2026-10-14 20:40:18.043] [INFO] [scope] 原始返回：{"visible_partyids":[],"visible_vids":[{"id":"1688857349899845","vid":"1688857349899845","name":"锟","acctid":"Kun","parentid":"1688857349899848","party_list":["1688857349899848"],"delete_stat":0}],"visible_tagids":[]}
+[2026-10-14 20:40:20.251] [INFO] 已将机器人「使用方式」设置为：多人使用
+[2026-10-14 20:40:20.262] [INFO] 公用模式：核对/补全可见范围（当前已选标签 2 个，目标为全企业根节点）...
+[2026-10-14 20:40:21.607] [INFO] [debug] 可见范围弹窗已转储：D:\ForRunning\ForDev\myclaw\auto_wecom\artifacts\html\scope-dialog-1792010421497.html
+[2026-10-14 20:40:22.156] [INFO] 可见范围右侧已选列表出现组织节点（1 项），正在提交...
+[2026-10-14 20:40:22.171] [INFO] [debug] 交互后弹窗已转储：D:\ForRunning\ForDev\myclaw\auto_wecom\artifacts\html\scope-dialog-after-1792010422156.html
+[2026-10-14 20:40:23.019] [INFO] 可见范围弹窗已点击「确认」。
+[2026-10-14 20:40:25.864] [INFO] [scope] 可见范围：部门 1，成员 1，标签 0
+[2026-10-14 20:40:25.864] [INFO] [scope] 原始返回：{"visible_partyids":[{"id":"1688857349899848","partyid":"1688857349899848","name":"锟的团队","parentid":0,"openapi_partyid":"1"}],"visible_vids":[{"id":"1688857349899845","vid":"1688857349899845","name":"锟","acctid":"Kun","parentid":"1688857349899848","party_list":["1688857349899848"],"delete_stat":0}],"visible_tagids":[]}
+[2026-10-14 20:40:27.051] [INFO] 已保存机器人编辑变更。
+[2026-10-14 20:40:28.554] [INFO] 保存后接口复核：可见范围已含组织节点，覆盖正常。
+[2026-10-14 20:40:28.565] [INFO] Bot ID：aibFDmX3-rIS0EuU-1IzPwLzEFMyOqXQdfU
+[2026-10-14 20:40:28.565] [INFO] Secret：VF0V****ugo8（已明文写入 D:\ForRunning\ForDev\myclaw\.env）
+[2026-10-14 20:40:28.565] [INFO] 创建者 userid：Kun
+[2026-10-14 20:40:28.566] [INFO] 结果文件已写入：D:\ForRunning\ForDev\myclaw\auto_wecom\wecom-bot-result.json
+[2026-10-14 20:40:28.735] [INFO] [debug] 成功态截图：D:\ForRunning\ForDev\myclaw\auto_wecom\artifacts\screenshots\2026-10-14T20-40-28-567Z-成功-配置完成.png
+[2026-10-14 20:40:28.735] [INFO] 配置完成：请在企业微信中测试机器人。
